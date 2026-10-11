@@ -1,0 +1,27 @@
+{
+  "name": "associative-graph-memory",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@kessler/gemma-embedding": "^1.0.0",
+    "@ladybugdb/core": "0.19.1",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@typesafe-ai/sdk": "^0.6.0",
+    "zod": "^4.6.5"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "serve": "node --env-file-if-exists=.env src/runtime/start.ts",
+    "dashboard:dev": "npm --prefix dashboard run dev",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "explorer": "docker run -p 8000:8000 -v ./data:/database -e LBUG_FILE=ladybug --rm ghcr.io/ladybugdb/explorer:latest"
+  }
+}
