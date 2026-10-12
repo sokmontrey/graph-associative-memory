@@ -111,34 +111,3 @@ Agent loop (see `AGENT.md` + `memory://agent-guide`):
 4. On conflict: `memory_resolve_contradiction(keepId, dropId, rationale)`;
    on doubt: `memory_challenge`; on support: `memory_corroborate`.
 5. `memory_invalidate` to retire, `memory_reinstate` to undo.
-
-## Env
-
-`.env.example` documents all vars (loaded via `node --env-file-if-exists=.env`):
-
-- `LBUG_DB_PATH` — default `./data/ladybug` (isolated). Point elsewhere to
-  share (additive migration adds validity/decay columns with defaults).
-- `MEMORY_PORT` — default `4317`.
-- `MEMORY_MCP` / `MEMORY_DASHBOARD` — set to `0` to disable either half.
-- `MEMORY_GEMMA_DTYPE` — `q8` (default, ~300 MB), `fp32`, or `q4`.
-- `TYPESAFE_API_KEY` — powers `memory_propose_links` suggestions (Jev).
-  Missing key warns once at startup instead of failing late.
-
-## Project layout
-
-- `src/db` — schema + relations (incl. `MemoryDecayClock`, watermarks)
-- `src/repos` — generic graph/node/edge repos (Ladybug)
-- `src/models` — memory node/edge types + rank
-- `src/services/embeddings` — Gemma embedder + vector index
-- `src/services/graphMemory` — low-level service + `decay/` (clock, math,
-  settler) + `search/`
-- `src/services/highlevelMemory` — recall, proposeLinks, beliefs,
-  instrumentation events
-- `src/mcp` — MCP server (tools, guide resource, prompt)
-- `src/dashboard` — HTTP + SSE server projecting graph + ops
-- `src/runtime` — single-process entrypoint (`start.ts`)
-- `dashboard/` — React + Vite realtime UI
-- `AGENT.md` — agent mental model, tool reference, test scenarios A/B/C
-
-Wire types are duplicated in `dashboard/src/types.ts`; keep in sync with
-`src/dashboard/protocol.ts` and `src/services/highlevelMemory/events.ts`.
