@@ -9,38 +9,29 @@ and recalls; you watch the graph update in realtime.
 
 ## Features
 
-- **Two-axis memory model:** `importance` (salience) × `validity` (0..1
-  believed-ness) = surfacing `rank`. Salience erodes slowly, belief decides
-  truth.
-- **Lazy global decay clock:** every op advances a shared log-clock O(1);
-  rows settle their backlog lazily on read. No bulk rewrites. Dashboard
-  `tick` applies one large bulk decay step.
-- **Soft tombstones:** `invalidate` retires a node/edge (kept for audit,
-  hidden from surfacing, reversible via `reinstate`).
-- **Smart link suggestions:** `propose_links` uses Jev to judge how two
-  memories relate (`supports` / `contradicts` / `related_to` / `evokes`, or
-  no link), which direction it points, and which side to keep on conflict.
-  Every suggestion carries its confidence and reasons — you decide.
-- **Contradiction loop:** when memories disagree, keep the winner and retire
-  the loser with a rationale (`resolve_contradiction`); hedge with
-  `challenge` (soft doubt) / `corroborate` (support) when unsure.
-- **Associative recall:** `recall(initialIdea → goalIdea)` walks the graph
-  and reinforces the traversed edges (not a pure read).
-- **Semantic search:** EmbeddingGemma-300M (768 dims) + vector index;
-  `get_top_importance{ semanticQuery, n }` returns only matches above a
-  similarity floor (no padding). Ladybug `vector` extension is best-effort,
-  falls back to brute-force cosine.
-- **MCP server:** 13 tools (`get_top_importance`, `recall`, `stats`,
-  `get_node`, `remember`, `propose_links`, `connect`, `reinforce`,
-  `challenge`, `corroborate`, `invalidate`, `reinstate`,
-  `resolve_contradiction`) + `memory://agent-guide` resource +
-  `memory-session` prompt.
-- **Realtime dashboard:** HTTP + SSE backend projecting the whole graph and
-  every op step live; React + Vite UI with graph view, ops timeline,
-  inspector, controls, and semantic search.
-- **Single-process runtime:** MCP (stdio) + dashboard share one process
-  because LadybugDB is embedded single-process. Clean checkpoint on
-  shutdown, orphan-watch, busy-port isolation.
+- **Everything has a half-life.** Nodes carry `importance`, edges carry
+  `strength`. Both fade over time.
+- **Important nodes surface.** High-importance memories show up regularly in
+  top results.
+- **Strong edges connect.** Well-used paths make graph walks reach their goal
+  faster and better.
+- **Use makes strong.** Reading a node or walking an edge reinforces it — the
+  more it's used, the longer it lives.
+- **Recall beats lookup.** Instead of fetching a node directly, the agent
+  walks from a start idea to a goal idea (`recall`). The walked edges and the
+  used goal node grow stronger, so knowledge is found by association. This
+  avoids the rich-get-richer trap, where the already-strongest nodes would
+  otherwise win every time and the rest never gets visited.
+- **Forgetting is automatic.** A lazy global decay clock quietly fades unused
+  nodes and edges; the dashboard `tick` button applies one big forgetting
+  step.
+- **Second opinions included.** `propose_links` uses Jev to suggest how two
+  memories relate and which side to keep on conflict (you decide), and a
+  separate belief score (`validity`) lets the agent doubt or correct a memory
+  without deleting it.
+- **Comprehensive dashboard.** Live graph, every operation step-by-step,
+  node/link inspector, controls to run any op, and semantic search — watch
+  memory strengthen, fade, and rewire in realtime.
 
 ## Installation
 
