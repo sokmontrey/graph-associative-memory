@@ -7,7 +7,7 @@ get resolved, nothing is silently lost.
 Connects over MCP tools plus a live dashboard: the agent remembers, links,
 and recalls; you watch the graph update in realtime.
 
-## Features
+## How it works
 
 - **Everything has a half-life.** Nodes carry `importance`, edges carry
   `strength`. Both fade over time.
