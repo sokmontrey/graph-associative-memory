@@ -45,8 +45,10 @@ export class JevLinkGrounder implements LinkGrounder {
       try {
         this.client = new TypeSafeClient();
       } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
         throw new Error(
-          "JevLinkGrounder: cannot create the TypeSafe client — set TYPESAFE_API_KEY in the environment.",
+          `JevLinkGrounder: cannot create the TypeSafe client — set TYPESAFE_API_KEY in the environment (${detail}). ` +
+            `Note: when launched via opencode.json, an empty host TYPESAFE_API_KEY used to mask .env; the explicit environment override has been removed so --env-file-if-exists=.env applies.`,
           { cause: error }
         );
       }

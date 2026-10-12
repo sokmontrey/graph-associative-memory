@@ -5,10 +5,13 @@ import type { StateSnapshot, WireEdge, WireNode } from "./protocol.ts";
 
 // Full graph snapshot for the dashboard: every node and edge, including soft
 // tombstones, so invalidated rows can be drawn (and toggled) rather than vanish.
+// Values are projected through the lazy-decay clock (pure, no writes) so the
+// display reflects pending decay; watermarks catch up on next settle.
 export async function buildSnapshot(stack: MemoryStack): Promise<StateSnapshot> {
-  const nodes = await stack.nodeRepo.findAll();
+  const storedNodes = await stack.nodeRepo.findAll();
+  const nodes = stack.service.projectSettledNodes(storedNodes);
   const edgeRows = await stack.edgeRepo.list({ table: MEMORY_EDGE_TABLE });
-  const edges = edgeRows.map(mapMemoryEdge);
+  const edges = stack.service.projectSettledEdges(edgeRows.map(mapMemoryEdge));
 
   const wireNodes: WireNode[] = nodes.map((node) => ({
     id: node.id,

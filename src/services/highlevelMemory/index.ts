@@ -2,8 +2,8 @@ import type { MemoryEdge, MemoryNode, MemoryNodeType } from "../../models/memory
 
 export interface HighlevelMemoryService {
     // Top N memories by surfacing rank (importance x validity). With
-    // `semanticQuery`, candidates come from semantic search first, then get
-    // ranked.
+    // `semanticQuery`, candidates come from semantic search and stay ordered
+    // by similarity to the query (closest description first).
     getTopImportance(
         type: MemoryTypeFilter,
         n: number,

@@ -1,4 +1,5 @@
 import type { MemoryEdge, MemoryNode, NewMemoryEdge, NewMemoryNode } from "../../models/memory.ts";
+import type { DecayClockState } from "./decay/index.ts";
 
 export interface MemoryService {
     // Returns top-n nodes sorted by importance
@@ -45,8 +46,37 @@ export interface MemoryService {
     addMemory(node: NewMemoryNode): Promise<MemoryNode>;
     addEdge(edge: NewMemoryEdge): Promise<MemoryEdge>;
 
-    // Batch half-life update: applies decay to active nodes (importance and
-    // validity) and active edges (strength). Invalidated rows are frozen.
+    // --- Lazy decay (see decay/) -------------------------------------------
+
+    /** Current clock values, for pure projections that must not write. */
+    clockSnapshot(): DecayClockState;
+
+    /**
+     * Advance the global decay clock for one operation (O(1)). Called
+     * decay-first by the high-level instrument wrapper with the op name, so
+     * every operation moves the clock with its own rate.
+     */
+    advanceForOp(op: string): Promise<DecayClockState>;
+
+    /**
+     * Settle rows for surfacing: persist due backlogs, return settled copies.
+     * Invalidated rows pass through untouched (tombstones are frozen).
+     */
+    settleNodesForRead(nodes: MemoryNode[]): Promise<MemoryNode[]>;
+    settleEdgesForRead(edges: MemoryEdge[]): Promise<MemoryEdge[]>;
+
+    /**
+     * Pure in-memory projection (no writes) for full-graph consumers
+     * (stats, dashboard snapshot) that must not pay O(N) writes on a read.
+     */
+    projectSettledNodes(nodes: MemoryNode[]): MemoryNode[];
+    projectSettledEdges(edges: MemoryEdge[]): MemoryEdge[];
+
+    // Manual big hammer: advances the clock by the legacy bulk factors (lazy,
+    // O(1) — no row scan). Rows settle on their next read or mutation.
+
+    // Manual big hammer: advances the clock by the legacy bulk factors (lazy,
+    // O(1) — no row scan). Rows settle on their next read or mutation.
     // Reinforce happens only via the explicit reinforce* methods above.
     tick(): Promise<void>;
 }

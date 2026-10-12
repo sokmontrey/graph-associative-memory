@@ -6,10 +6,7 @@
       "command": ["node", "--env-file-if-exists=.env", "src/runtime/start.ts"],
       "cwd": ".",
       "enabled": true,
-      "timeout": 300000,
-      "environment": {
-        "TYPESAFE_API_KEY": "{env:TYPESAFE_API_KEY}"
-      }
+      "timeout": 300000
     }
   },
   "instructions": ["AGENT.md"]

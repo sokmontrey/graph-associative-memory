@@ -72,11 +72,16 @@ export class LadybugVectorIndex implements VectorIndex {
       `CALL QUERY_VECTOR_INDEX('${this.table}', '${this.indexName}', $vector, $k) RETURN node.id AS id, distance;`,
       { vector: [...vector], k }
     );
-    return rows.map((row) => ({
-      id: String(row["id"]),
-      // Cosine metric: distance = 1 - cosine similarity (normalized vectors).
-      score: 1 - Number(row["distance"]),
-    }));
+    // QUERY_VECTOR_INDEX returns the right set but in storage order, not
+    // ranked (true #1 came back at position 18/24 for a dashboard query).
+    // Rank here so callers always get best-match-first.
+    return rows
+      .map((row) => ({
+        id: String(row["id"]),
+        // Cosine metric: distance = 1 - cosine similarity (normalized vectors).
+        score: 1 - Number(row["distance"]),
+      }))
+      .sort((a, b) => b.score - a.score);
   }
 
   async remove(_id: string): Promise<void> {

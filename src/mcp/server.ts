@@ -87,14 +87,16 @@ export function createMemoryMcpServer(deps: MemoryMcpDeps): McpServer {
     {
       title: "Top memories",
       description:
-        "Return the most important memories (rank = importance x validity). Pass `semanticQuery` to bias toward a topic. Call this to surface what the agent currently knows/believes before answering.",
+        "Return the most important memories (rank = importance x validity). Pass `semanticQuery` to order by similarity to a topic (closest description first). Call this to surface what the agent currently knows/believes before answering.",
       inputSchema: z.object({
         type: z.enum(TYPE_FILTER).describe("Node kind filter, or 'all'."),
         n: z.number().int().min(1).max(100).describe("How many memories to return."),
         semanticQuery: z
           .string()
           .optional()
-          .describe("Optional topic; candidates come from semantic search first, then get ranked."),
+          .describe(
+            "Optional topic; candidates come from semantic search, ordered by similarity. Only matches above a similarity floor are returned, so an unrelated topic may return fewer than n (even zero) instead of padding with unrelated memories."
+          ),
       }),
     },
     async ({ type, n, semanticQuery }) => {

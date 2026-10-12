@@ -53,6 +53,17 @@ const SCHEMA_STATEMENTS = [
     invalidated_at TIMESTAMP,
     invalidate_reason STRING
   );`,
+  // Lazy-decay clock: ONE row (id 'global') holding the running log-sums every
+  // memory/edge watermark settles against. Advanced O(1) per operation; rows
+  // apply their personal backlog lazily on read. Log-space so thousands of
+  // near-1.0 factors drift linearly instead of underflowing.
+  `CREATE NODE TABLE IF NOT EXISTS MemoryDecayClock(
+    id STRING PRIMARY KEY,
+    l_importance DOUBLE,
+    l_validity DOUBLE,
+    l_strength DOUBLE,
+    seq DOUBLE
+  );`,
 ];
 
 // Idempotent additive migration for databases created before the validity
@@ -68,6 +79,12 @@ const MIGRATION_STATEMENTS = [
   `ALTER TABLE MEMORY_RELATES_TO ADD IF NOT EXISTS status STRING DEFAULT 'active';`,
   `ALTER TABLE MEMORY_RELATES_TO ADD IF NOT EXISTS invalidated_at TIMESTAMP;`,
   `ALTER TABLE MEMORY_RELATES_TO ADD IF NOT EXISTS invalidate_reason STRING;`,
+  // Lazy-decay watermarks: per-row snapshot of the global log-clock at last
+  // settle. DEFAULT 0.0 (= genesis clock) means legacy rows owe decay since
+  // the clock began — correct, they were never settled.
+  `ALTER TABLE MemoryNode ADD IF NOT EXISTS decay_l_importance DOUBLE DEFAULT 0.0;`,
+  `ALTER TABLE MemoryNode ADD IF NOT EXISTS decay_l_validity DOUBLE DEFAULT 0.0;`,
+  `ALTER TABLE MEMORY_RELATES_TO ADD IF NOT EXISTS decay_l_strength DOUBLE DEFAULT 0.0;`,
 ];
 
 export async function ensureSchema(conn: Connection): Promise<void> {

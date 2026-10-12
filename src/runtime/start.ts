@@ -19,13 +19,22 @@ try {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[memory] cannot open the database at ${DB_PATH}: ${message}`);
   console.error(
-    "[memory] if it is corrupt, or was built by a different embedder, remove it " +
-      "(e.g. `rm -rf data/ladybug data/ladybug.wal`) and start again."
+    "[memory] a backup of data/ladybug (+ .wal) may let you retry; " +
+      "tolerant WAL replay already runs automatically, so a repeat of this " +
+      "error is not a torn WAL — inspect the message before deleting anything."
   );
   process.exit(1);
 }
 
 let dashboard: DashboardServer | null = null;
+// memory_propose_links is the only op needing credentials; warn once instead
+// of failing late with a bare missing-key error (todo b5af1b54).
+if (!process.env["TYPESAFE_API_KEY"]) {
+  console.error(
+    "[memory] TYPESAFE_API_KEY is not set — memory_propose_links will fail; " +
+      "set it in .env (repo root, see .env.example) or the host environment."
+  );
+}
 if (enableDashboard) {
   try {
     dashboard = await createDashboardServer({ stack, port });
@@ -56,9 +65,45 @@ async function shutdown(signal: string): Promise<void> {
   console.error(`[memory] shutting down (${signal})`);
   if (dashboard) await dashboard.close();
   if (mcpHandle) await mcpHandle.close();
+  // Checkpoint before closing so an abrupt death later has less WAL to lose.
+  // (db.close() also flushes, but an explicit CHECKPOINT seals it first.)
+  try {
+    await stack.db.query("CHECKPOINT");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[memory] checkpoint on shutdown failed: ${message}`);
+  }
   await stack.close();
-  process.exit(0);
+  process.exit(signal.startsWith("fatal:") ? 1 : 0);
 }
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+// The host may kill the stdio child without SIGINT/SIGTERM (close/reopen).
+// These cover the remaining abrupt-death paths a single-process embedded DB
+// must survive: hangup, quit, broken stdout pipe, orphaning, and fatal errors
+// (which checkpoint before exiting nonzero).
+process.on("SIGHUP", () => void shutdown("SIGHUP"));
+process.on("SIGQUIT", () => void shutdown("SIGQUIT"));
+process.on("SIGPIPE", () => void shutdown("SIGPIPE"));
+// Orphan watch: if our parent dies without signalling us, we get reparented
+// (ppid becomes 1) while still holding the database lock and dashboard port —
+// which would brick the next launch. Poll for that and bow out cleanly.
+// (stdin 'end'/'close' is deliberately NOT used: incidental pipes and
+// /dev/null reach EOF immediately and would kill a healthy server.)
+const parentPidAtStart = process.ppid;
+let orphanTimer: NodeJS.Timeout | null = null;
+if (parentPidAtStart !== 1) {
+  orphanTimer = setInterval(() => {
+    if (!shuttingDown && process.ppid === 1) void shutdown("orphan");
+  }, 5000);
+  orphanTimer.unref();
+}
+process.on("uncaughtException", (error) => {
+  console.error(`[memory] uncaught exception: ${error instanceof Error ? error.message : String(error)}`);
+  void shutdown("fatal:uncaughtException");
+});
+process.on("unhandledRejection", (reason) => {
+  console.error(`[memory] unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`);
+  void shutdown("fatal:unhandledRejection");
+});

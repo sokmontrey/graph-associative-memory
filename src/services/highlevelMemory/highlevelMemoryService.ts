@@ -58,6 +58,13 @@ import type { LinkGrounder } from "./linkGrounder.ts";
 
 // Candidates fetched per semantic search: relevance selects, importance orders.
 const SEARCH_OVERSAMPLE = 3;
+// Minimum cosine similarity for a semantic hit to surface. Vector search
+// always returns k rows (best available, however distant), so without a floor
+// an unrelated query still fills all n slots with whatever is oldest. Below
+// ~0.2 is unrelated and 0.4+ is clearly related on EmbeddingGemma asymmetric
+// scores (dashboard query: relevant 0.64-0.70, next 0.30; bell query: filler
+// 0.27); 0.3 keeps the clearly related and drops the padding.
+const SEMANTIC_MIN_SCORE = 0.3;
 // In-memory active buffer: newest remembers and the last recall's nodes.
 const RECENT_REMEMBERED = 10;
 const BUFFER_SIZE = 20;
@@ -100,6 +107,12 @@ export type HighlevelMemoryServiceDeps = {
   events?: MemoryEventBus;
   nodeRepo?: NodeRepo<MemoryNode, MemoryNodeUpsert, MemoryNodePatch>;
   edgeRepo?: EdgeRepo;
+  /**
+   * Low-level service to build on. Defaults to a fresh GraphMemoryService, but
+   * pass the shared one when it exists: the DecayClock lives there, and two
+   * clocks over one DB row would clobber each other with stale in-memory state.
+   */
+  memory?: MemoryService;
 };
 
 // Concrete HighlevelMemoryService. Composes the low-level MemoryService for
@@ -145,13 +158,17 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
         map: mapMemoryNode,
       });
     const edges = deps.edgeRepo ?? new LadybugEdgeRepo(deps.db, [MEMORY_EDGE_TABLE_CONFIG]);
-    const memory = await GraphMemoryService.create({
-      db: deps.db,
-      embedder: deps.embedder,
-      search: deps.search,
-      nodeRepo: nodes,
-      edgeRepo: edges,
-    });
+    // Reuse the shared low-level service when provided so both layers advance
+    // the same DecayClock (see the `memory` dep docs).
+    const memory =
+      deps.memory ??
+      (await GraphMemoryService.create({
+        db: deps.db,
+        embedder: deps.embedder,
+        search: deps.search,
+        nodeRepo: nodes,
+        edgeRepo: edges,
+      }));
     const grounder = deps.grounder ?? JevLinkGrounder.create();
     const events = deps.events ?? NOOP_MEMORY_EVENTS;
     return new HighlevelMemoryService(
@@ -178,19 +195,68 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
         if (n === 0) return [];
         const matches = (node: MemoryNode) =>
           node.status === MEMORY_STATUS_ACTIVE && (type === "all" || node.type === type);
+        // Blank semantic queries previously embedded the empty string and
+        // returned arbitrary neighbors (todo 0abdab9a). Treat as unfiltered.
+        const query = semanticQuery?.trim() ? semanticQuery.trim() : undefined;
         let pool: MemoryNode[];
-        if (semanticQuery === undefined) {
+        // Similarity order (best match first) when a semantic query selects
+        // the pool; null keeps the rank-by-importance ordering. Previously the
+        // pool was always re-sorted by rank, which discarded the vector order
+        // and could bury or cut the closest-description match.
+        let similarity: string[] | null = null;
+        if (query === undefined) {
           pool = await this.nodes.findAll({ where: { status: MEMORY_STATUS_ACTIVE } });
         } else {
-          const hits = await this.search.searchNodes(semanticQuery, n * SEARCH_OVERSAMPLE);
-          emit("search", { query: semanticQuery, hits: hits.length });
-          if (hits.length === 0) return [];
-          pool = await this.nodes.findAll({ where: { id: hits.map((hit) => hit.id) } });
+          const hits = await this.search.searchNodes(query, n * SEARCH_OVERSAMPLE);
+          if (hits.length === 0) {
+            pool = await this.lexicalFallbackNodes(query, n * SEARCH_OVERSAMPLE);
+            emit("searchFallback", { query, hits: pool.length });
+            // lexicalFallbackNodes is already score-ordered.
+            similarity = pool.map((node) => node.id);
+          } else {
+            // Relevance floor: keep only hits above the threshold instead of
+            // padding up to n with unrelated rows. An empty filtered set
+            // returns no results (it does NOT fall through to the lexical
+            // fallback — that path is for when vector search itself misses).
+            const relevant = hits.filter((hit) => hit.score >= SEMANTIC_MIN_SCORE);
+            emit("search", {
+              query,
+              hits: hits.length,
+              kept: relevant.length,
+              minScore: SEMANTIC_MIN_SCORE,
+            });
+            if (relevant.length === 0) {
+              pool = [];
+              similarity = [];
+            } else {
+              pool = await this.nodes.findAll({ where: { id: relevant.map((hit) => hit.id) } });
+              // Vector slots spent on invalidated nodes never hydrate to active
+              // results; supplement from the lexical fallback instead of
+              // returning a short page.
+              const hydrated = pool.filter(matches);
+              if (hydrated.length === 0) {
+                pool = await this.lexicalFallbackNodes(query, n * SEARCH_OVERSAMPLE);
+                emit("searchFallback", { query, hits: pool.length });
+                similarity = pool.map((node) => node.id);
+              } else {
+                similarity = relevant.map((hit) => hit.id);
+              }
+            }
+          }
         }
-        const ranked = pool
-          .filter(matches)
-          .sort((a, b) => memoryRank(b) - memoryRank(a))
-          .slice(0, n);
+        const filtered = pool.filter(matches);
+        // Settle the working set before ranking: stored importance is lazily
+        // decayed, so rank on settled values.
+        const settled = await this.memory.settleNodesForRead(filtered);
+        let ranked: MemoryNode[];
+        if (similarity === null) {
+          ranked = settled.sort((a, b) => memoryRank(b) - memoryRank(a)).slice(0, n);
+        } else {
+          const order = new Map(similarity.map((id, index) => [id, index]));
+          ranked = settled
+            .sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity))
+            .slice(0, n);
+        }
         emit("rank", { ids: ranked.map((node) => node.id) });
         return ranked;
       },
@@ -207,6 +273,9 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
       "recall",
       { initialIdea, goalIdea, searchHints },
       async (emit) => {
+        if (!initialIdea.trim() || !goalIdea.trim()) {
+          throw new Error("recall: initialIdea and goalIdea must be non-empty");
+        }
         emit("embed", { initial: initialIdea, goal: goalIdea, hints: searchHints });
         const goalVector = await embedQueryText(this.embedder, goalIdea);
         const hintVectors = await Promise.all(
@@ -454,8 +523,11 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
 
   async challenge(memoryId: string, reason: string): Promise<MemoryNode> {
     return this.instrument("challenge", { memoryId, reason }, async (emit) => {
-      const before = await this.nodes.findById(memoryId);
-      if (!before) throw new Error(`challenge: unknown memory ${memoryId}`);
+      const found = await this.nodes.findById(memoryId);
+      if (!found) throw new Error(`challenge: unknown memory ${memoryId}`);
+      // Settle first so the doubt multiplier applies to a fresh value.
+      const settled = await this.memory.settleNodesForRead([found]);
+      const before = settled[0] ?? found;
       const to = challengeValidity(before.validity);
       const updated = (await this.memory.setMemoryValidity(memoryId, to)) ?? before;
       emit("validity", { id: memoryId, from: before.validity, to, reason });
@@ -469,8 +541,10 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
       "corroborate",
       { memoryId, reason: reason ?? null },
       async (emit) => {
-        const before = await this.nodes.findById(memoryId);
-        if (!before) throw new Error(`corroborate: unknown memory ${memoryId}`);
+        const found = await this.nodes.findById(memoryId);
+        if (!found) throw new Error(`corroborate: unknown memory ${memoryId}`);
+        const settled = await this.memory.settleNodesForRead([found]);
+        const before = settled[0] ?? found;
         const to = corroborateValidity(before.validity);
         await this.memory.setMemoryValidity(memoryId, to);
         const updated = (await this.memory.reinforceMemories([memoryId]))[0] ?? before;
@@ -501,6 +575,9 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
     if (!Number.isFinite(validity)) {
       throw new Error(`setValidity: validity must be finite, got ${validity}`);
     }
+    // Not instrumented (no dashboard op), but still moves the clock: every
+    // operation decays.
+    await this.memory.advanceForOp("setValidity");
     const clamped = Math.min(HALF_LIFE.MAX, Math.max(HALF_LIFE.VALIDITY_FLOOR, validity));
     const updated = await this.memory.setMemoryValidity(memoryId, clamped);
     if (!updated) throw new Error(`setValidity: unknown memory ${memoryId}`);
@@ -509,28 +586,35 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
   }
 
   async inspect(memoryId: string): Promise<MemoryInspection> {
-    const node = await this.nodes.findById(memoryId);
-    if (!node) return { node: null, outEdges: [], inEdges: [], neighbors: [] };
-    const outEdges = (await this.edges.list({ table: MEMORY_EDGE_TABLE, fromId: memoryId })).map(
-      mapMemoryEdge
+    await this.memory.advanceForOp("inspect");
+    const found = await this.nodes.findById(memoryId);
+    if (!found) return { node: null, outEdges: [], inEdges: [], neighbors: [] };
+    const [node] = await this.memory.settleNodesForRead([found]);
+    const outEdges = await this.memory.settleEdgesForRead(
+      (await this.edges.list({ table: MEMORY_EDGE_TABLE, fromId: memoryId })).map(mapMemoryEdge)
     );
-    const inEdges = (await this.edges.list({ table: MEMORY_EDGE_TABLE, toId: memoryId })).map(
-      mapMemoryEdge
+    const inEdges = await this.memory.settleEdgesForRead(
+      (await this.edges.list({ table: MEMORY_EDGE_TABLE, toId: memoryId })).map(mapMemoryEdge)
     );
     const neighborIds = [
       ...new Set([...outEdges.map((edge) => edge.to), ...inEdges.map((edge) => edge.from)]),
     ];
     const neighbors = neighborIds.length
-      ? await this.nodes.findAll({ where: { id: neighborIds } })
+      ? await this.memory.settleNodesForRead(await this.nodes.findAll({ where: { id: neighborIds } }))
       : [];
-    return { node, outEdges, inEdges, neighbors };
+    return { node: node!, outEdges, inEdges, neighbors };
   }
 
   async stats(): Promise<MemoryStats> {
+    await this.memory.advanceForOp("stats");
     const nodes = await this.nodes.findAll();
     const edges = (await this.edges.list({ table: MEMORY_EDGE_TABLE })).map(mapMemoryEdge);
-    const activeNodes = nodes.filter((node) => node.status === MEMORY_STATUS_ACTIVE);
-    const activeEdges = edges.filter((edge) => edge.status === MEMORY_STATUS_ACTIVE);
+    // Pure projection: stats scans the whole graph, so show settled values
+    // without paying O(N) writes — watermarks catch up on next settle.
+    const settledNodes = this.memory.projectSettledNodes(nodes);
+    const settledEdges = this.memory.projectSettledEdges(edges);
+    const activeNodes = settledNodes.filter((node) => node.status === MEMORY_STATUS_ACTIVE);
+    const activeEdges = settledEdges.filter((edge) => edge.status === MEMORY_STATUS_ACTIVE);
     const avg = (values: number[]) =>
       values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
     const byNodeType: Record<MemoryNodeType, number> = { preference: 0, trait: 0, observation: 0 };
@@ -574,7 +658,17 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
     const emit = (phase: string, detail: Record<string, unknown>) =>
       this.events.emit({ type: "step", opId, op, at: Date.now(), phase, detail });
     this.events.emit({ type: "op:start", opId, op, at: started, args });
-    return run(emit).then(
+    // Decay-first: advance the global log-clock before the op runs, so every
+    // operation moves decay with its own rate (reads: barely; writes: a touch
+    // more). Rows the op then touches settle-then-apply inside the low-level
+    // mutators, so a reinforce bonus always nets positive on top of the
+    // micro-decay — touched rows are never penalized by their own op.
+    const runAfterDecay = async (): Promise<T> => {
+      const snap = await this.memory.advanceForOp(op);
+      emit("decay", { seq: snap.seq });
+      return run(emit);
+    };
+    return runAfterDecay().then(
       (result) => {
         this.events.emit({
           type: "op:end",
@@ -628,7 +722,9 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
     ].slice(0, BUFFER_SIZE);
     if (ids.length === 0) return [];
     const found = await this.nodes.findAll({ where: { id: ids } });
-    return found.filter((node) => node.status === MEMORY_STATUS_ACTIVE);
+    return this.memory.settleNodesForRead(
+      found.filter((node) => node.status === MEMORY_STATUS_ACTIVE)
+    );
   }
 
   // Candidate memories for proposeLinks. Given a focusId, the focus plus the
@@ -638,12 +734,13 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
   private async proposeCandidates(options: ProposeLinksOptions): Promise<MemoryNode[]> {
     const buffer = await this.activeBufferNodes();
     if (options.focusId !== undefined) {
-      const focus = await this.nodes.findById(options.focusId);
-      if (!focus || focus.status !== MEMORY_STATUS_ACTIVE) {
+      const found = await this.nodes.findById(options.focusId);
+      if (!found || found.status !== MEMORY_STATUS_ACTIVE) {
         throw new Error(`proposeLinks: unknown or inactive focus ${options.focusId}`);
       }
-      const nearby = await this.searchNodes(focus.description, FOCUS_NEIGHBORS);
-      return dedupeNodes([focus, ...buffer, ...nearby]);
+      const [focus] = await this.memory.settleNodesForRead([found]);
+      const nearby = await this.searchNodes(focus!.description, FOCUS_NEIGHBORS);
+      return dedupeNodes([focus!, ...buffer, ...nearby]);
     }
     if (buffer.length >= 2) return buffer;
     const active = await this.nodes.findAll({ where: { status: MEMORY_STATUS_ACTIVE } });
@@ -651,15 +748,40 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
   }
 
   private async searchNodes(query: string, limit: number): Promise<MemoryNode[]> {
-    const hits = await this.search.searchNodes(query, limit);
-    if (hits.length === 0) return [];
-    const found = await this.nodes.findAll({ where: { id: hits.map((hit) => hit.id) } });
-    const byId = new Map(found.map((node) => [node.id, node]));
-    return hits
-      .map((hit) => byId.get(hit.id))
-      .filter((node): node is MemoryNode => node !== undefined)
-      .filter((node) => node.status === MEMORY_STATUS_ACTIVE)
-      .slice(0, limit);
+    const trimmed = query.trim();
+    if (trimmed.length === 0 || limit === 0) return [];
+    const hits = await this.search.searchNodes(trimmed, limit);
+    if (hits.length > 0) {
+      const found = await this.nodes.findAll({ where: { id: hits.map((hit) => hit.id) } });
+      const byId = new Map(found.map((node) => [node.id, node]));
+      const active = hits
+        .map((hit) => byId.get(hit.id))
+        .filter((node): node is MemoryNode => node !== undefined)
+        .filter((node) => node.status === MEMORY_STATUS_ACTIVE)
+        .slice(0, limit);
+      if (active.length > 0) return this.memory.settleNodesForRead(active);
+    }
+    return this.lexicalFallbackNodes(trimmed, limit);
+  }
+
+  // Offline lexical fallback (mirrors ContainsMemorySearch token-OR scoring
+  // without needing the DB handle): token-OR over active descriptions,
+  // ordered by token coverage then rank. Used when vector search misses.
+  private async lexicalFallbackNodes(query: string, limit: number): Promise<MemoryNode[]> {
+    const tokens = query.toLowerCase().split(/\s+/).filter((token) => token.length > 0);
+    if (tokens.length === 0 || limit === 0) return [];
+    const active = await this.nodes.findAll({ where: { status: MEMORY_STATUS_ACTIVE } });
+    const ranked = active
+      .map((node) => {
+        const text = node.description.toLowerCase();
+        const matched = tokens.filter((token) => text.includes(token)).length;
+        return { node, score: matched / tokens.length };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || memoryRank(b.node) - memoryRank(a.node))
+      .slice(0, limit)
+      .map((entry) => entry.node);
+    return this.memory.settleNodesForRead(ranked);
   }
 
   // One greedy step: the out-edge whose neighbor best matches the goal or a
@@ -687,14 +809,22 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
     }
     if (fresh.length === 0) return null;
 
+    // Settle before scoring: the walk scales attraction by validity, so score
+    // on fresh values.
+    const settledNodes = await this.memory.settleNodesForRead(fresh.map((neighbor) => neighbor.node));
+    const settledById = new Map(settledNodes.map((node) => [node.id, node]));
+    const settledFresh = fresh.map((neighbor) => ({
+      ...neighbor,
+      node: settledById.get(neighbor.node.id) ?? neighbor.node,
+    }));
     const vectors = await embedDocTexts(
       this.embedder,
-      fresh.map((neighbor) => neighbor.node.description)
+      settledFresh.map((neighbor) => neighbor.node.description)
     );
     let bestIndex = -1;
     let bestScore = -Infinity;
-    for (let i = 0; i < fresh.length; i++) {
-      const neighbor = fresh[i]!;
+    for (let i = 0; i < settledFresh.length; i++) {
+      const neighbor = settledFresh[i]!;
       const vector = vectors[i]!;
       const goalScore = cosineSimilarity(vector, goalVector);
       const hintScore =
@@ -709,7 +839,7 @@ export class HighlevelMemoryService implements HighlevelMemoryServiceContract {
       }
     }
     if (bestIndex < 0) return null;
-    const chosen = fresh[bestIndex]!;
+    const chosen = settledFresh[bestIndex]!;
     return { step: { fromId: current.id, edge: chosen.edge, to: chosen.node }, score: bestScore };
   }
 

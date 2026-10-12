@@ -8,8 +8,11 @@ model, the tool reference, and scripted test scenarios. It is also served over M
 
 Every memory has two independent numbers, plus a lifecycle:
 
-- **importance** — *salience*: how readily it surfaces. Decays with `tick()`, rises when you
-  reinforce it (e.g. it was recalled or proved useful).
+- **importance** — *salience*: how readily it surfaces. Decays a little on every
+  operation (each op advances a shared decay clock with its own slow rate; rows
+  settle their backlog lazily when read), rises when you reinforce it (e.g. it
+  was recalled or proved useful). The dashboard `tick` button applies one large
+  bulk decay step.
 - **validity** — *believed-ness* (0..1). Decays slowly. Multiplies into surfacing rank.
 - **status** — `active` or `invalidated`. An invalidated memory is a **soft tombstone**:
   kept for audit, excluded from every surfacing path, reversible.

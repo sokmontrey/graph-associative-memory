@@ -5,12 +5,19 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
+import { Eye, EyeOff, Maximize, Minus, Plus, RotateCcw, Settings2 } from "lucide-react";
 import type { EdgeType, NodeType, StateSnapshot, WireEdge, WireNode } from "../types.ts";
 import type { Selection } from "./Inspector.tsx";
+import { Button } from "./ui/button.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Switch } from "./ui/switch.tsx";
+import { cn } from "@/lib/utils";
 
 interface SimNode extends SimulationNodeDatum {
   id: string;
@@ -29,10 +36,18 @@ const W = 900;
 const H = 620;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
+
 const NODE_COLOR: Record<NodeType, string> = {
-  preference: "var(--preference)",
-  trait: "var(--trait)",
-  observation: "var(--observation)",
+  preference: "var(--graph-preference)",
+  trait: "var(--graph-trait)",
+  observation: "var(--graph-observation)",
+};
+
+const EDGE_COLOR: Record<EdgeType, string> = {
+  supports: "var(--graph-supports)",
+  contradicts: "var(--graph-contradicts)",
+  related_to: "var(--graph-related)",
+  evokes: "var(--graph-evokes)",
 };
 
 export interface Overlays {
@@ -42,18 +57,46 @@ export interface Overlays {
   favored: string | null;
 }
 
+interface Physics {
+  /** repulsion magnitudes (applied as negative charge) */
+  isoCharge: number;
+  conCharge: number;
+  /** pull toward center */
+  isoGravity: number;
+  conGravity: number;
+  /** extra collision padding around a node */
+  isoGap: number;
+  conGap: number;
+  linkDistance: number;
+}
+
+const DEFAULT_PHYSICS: Physics = {
+  isoCharge: 40,
+  conCharge: 140,
+  isoGravity: 0.18,
+  conGravity: 0.02,
+  isoGap: 8,
+  conGap: 14,
+  linkDistance: 64,
+};
+
 export function GraphView({
   snapshot,
   selection,
   onSelect,
   overlays,
   showInvalidated,
+  onShowInvalidatedChange,
+  visibleIds,
 }: {
   snapshot: StateSnapshot | null;
   selection: Selection;
   onSelect: (selection: Selection) => void;
   overlays: Overlays;
   showInvalidated: boolean;
+  onShowInvalidatedChange: (v: boolean) => void;
+  /** When set, only these node ids are rendered (filtered op/search view). */
+  visibleIds: Set<string> | null;
 }) {
   const nodesRef = useRef(new Map<string, SimNode>());
   const linksRef = useRef<SimLink[]>([]);
@@ -76,11 +119,16 @@ export function GraphView({
   const [panning, setPanning] = useState(false);
   const dragRef = useRef<{ id: string; moved: boolean; lastX: number; lastY: number } | null>(null);
 
+  // Tunable layout physics (gear menu on the canvas).
+  const [physics, setPhysics] = useState<Physics>(DEFAULT_PHYSICS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   useEffect(() => {
     if (!snapshot) return;
     const byId = nodesRef.current;
-    const visibleNodes = snapshot.nodes.filter((n) => showInvalidated || n.status === "active");
-    const visibleIds = new Set(visibleNodes.map((n) => n.id));
+    const baseNodes = snapshot.nodes.filter((n) => showInvalidated || n.status === "active");
+    const visibleNodes = visibleIds ? baseNodes.filter((n) => visibleIds.has(n.id)) : baseNodes;
+    const visibleIdsSet = new Set(visibleNodes.map((n) => n.id));
 
     const simNodes = visibleNodes.map((n) => {
       const existing = byId.get(n.id);
@@ -99,14 +147,14 @@ export function GraphView({
       byId.set(n.id, created);
       return created;
     });
-    for (const id of [...byId.keys()]) if (!visibleIds.has(id)) byId.delete(id);
+    for (const id of [...byId.keys()]) if (!visibleIdsSet.has(id)) byId.delete(id);
 
     const simLinks: SimLink[] = snapshot.edges
       .filter(
         (e) =>
           (showInvalidated || e.status === "active") &&
-          visibleIds.has(e.from) &&
-          visibleIds.has(e.to)
+          visibleIdsSet.has(e.from) &&
+          visibleIdsSet.has(e.to)
       )
       .map((e) => {
         const prev = linksRef.current.find((l) => l.id === e.id);
@@ -125,26 +173,47 @@ export function GraphView({
       });
     linksRef.current = simLinks;
 
+    // Degree-aware forces: disconnected nodes (no incident links) get weak
+    // repulsion, a strong pull toward the center, and a tight collision
+    // radius — so they gather in a compact cluster instead of drifting apart.
+    // Connected nodes keep wide spacing for readability.
+    const degree = new Map<string, number>();
+    for (const l of simLinks) {
+      degree.set(l.edge.from, (degree.get(l.edge.from) ?? 0) + 1);
+      degree.set(l.edge.to, (degree.get(l.edge.to) ?? 0) + 1);
+    }
+    const isolated = (d: SimNode) => (degree.get(d.id) ?? 0) === 0;
+    const charge = () => forceManyBody<SimNode>().strength((d) => (isolated(d) ? -physics.isoCharge : -physics.conCharge));
+    const collide = () => forceCollide<SimNode>((d) => d.r + (isolated(d) ? physics.isoGap : physics.conGap));
+    const xPull = () => forceX<SimNode>(W / 2).strength((d) => (isolated(d) ? physics.isoGravity : physics.conGravity));
+    const yPull = () => forceY<SimNode>(H / 2).strength((d) => (isolated(d) ? physics.isoGravity : physics.conGravity));
+    const link = () =>
+      forceLink<SimNode, SimLink>(simLinks)
+        .id((d) => d.id)
+        .distance(physics.linkDistance)
+        .strength(0.55);
+
     if (!simRef.current) {
       simRef.current = forceSimulation<SimNode, SimLink>(simNodes)
-        .force("charge", forceManyBody<SimNode>().strength(-220))
-        .force(
-          "link",
-          forceLink<SimNode, SimLink>(simLinks)
-            .id((d) => d.id)
-            .distance(80)
-            .strength(0.35)
-        )
+        .force("charge", charge())
+        .force("link", link())
         .force("center", forceCenter(W / 2, H / 2))
-        .force("collide", forceCollide<SimNode>((d) => d.r + 8))
+        .force("x", xPull())
+        .force("y", yPull())
+        .force("collide", collide())
         .on("tick", () => tick((x) => x + 1));
     } else {
       const sim = simRef.current;
       sim.nodes(simNodes);
-      sim.force("link", forceLink<SimNode, SimLink>(simLinks).id((d) => d.id).distance(80).strength(0.35));
+      sim.force("charge", charge());
+      sim.force("link", link());
+      sim.force("center", forceCenter(W / 2, H / 2));
+      sim.force("x", xPull());
+      sim.force("y", yPull());
+      sim.force("collide", collide());
       sim.alpha(0.6).restart();
     }
-  }, [snapshot, showInvalidated]);
+  }, [snapshot, showInvalidated, visibleIds, physics]);
 
   useEffect(() => () => void simRef.current?.stop(), []);
 
@@ -216,7 +285,6 @@ export function GraphView({
   // Background pan (pointer events unify mouse + touch).
   const onBackgroundPointerDown = (e: React.PointerEvent<SVGRectElement>) => {
     if (dragRef.current) return;
-    // Only pan with primary button / touch contact.
     if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 1) return;
     panRef.current = {
       pointerId: e.pointerId,
@@ -247,7 +315,6 @@ export function GraphView({
     if (!pan || pan.pointerId !== e.pointerId) return;
     panRef.current = null;
     setPanning(false);
-    // Plain click (no drag) on empty canvas clears the selection.
     if (!pan.moved) onSelect(null);
   };
 
@@ -266,8 +333,6 @@ export function GraphView({
     const svg = svgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
-    // Convert screen-pixel movement into sim coords (undo viewBox scale + zoom).
-    // Uses client deltas (not movementX) so touch/pen dragging works too.
     const dx = ((e.clientX - drag.lastX) / rect.width) * W / viewRef.current.k;
     const dy = ((e.clientY - drag.lastY) / rect.height) * H / viewRef.current.k;
     if (Math.abs(e.clientX - drag.lastX) + Math.abs(e.clientY - drag.lastY) > 0) drag.moved = true;
@@ -283,7 +348,6 @@ export function GraphView({
     const drag = dragRef.current;
     if (!drag || drag.id !== sim.id) return;
     dragRef.current = null;
-    // Release the pin so the force layout can settle around the new position.
     sim.fx = undefined;
     sim.fy = undefined;
     simRef.current?.alphaTarget(0);
@@ -296,147 +360,233 @@ export function GraphView({
   const nodes = [...nodesRef.current.values()];
 
   return (
-    <div className="panel">
-      <div className="graph-head">
-        <h2>Graph ({nodes.length} shown)</h2>
-        <div className="graph-controls">
-          <button type="button" title="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button>
-          <span className="mono muted" style={{ minWidth: 44, textAlign: "center" }}>
-            {Math.round(view.k * 100)}%
-          </span>
-          <button type="button" title="Zoom in" onClick={() => zoomBy(1.2)}>+</button>
-          <button type="button" title="Fit all nodes" onClick={fitView}>fit</button>
-          <button type="button" title="Reset pan/zoom" onClick={resetView}>reset</button>
-        </div>
+    <div className="relative h-full w-full overflow-hidden">
+      <svg
+        ref={svgRef}
+        className={cn("graph", panning && "panning")}
+        viewBox={`0 0 ${W} ${H}`}
+        onDoubleClick={(e) => {
+          if ((e.target as Element).closest("g[data-node]")) return;
+          zoomBy(e.shiftKey ? 1 / 1.4 : 1.4);
+        }}
+      >
+        <rect
+          className="graph-bg"
+          x={-4000}
+          y={-4000}
+          width={W + 8000}
+          height={H + 8000}
+          fill="transparent"
+          onPointerDown={onBackgroundPointerDown}
+          onPointerMove={onBackgroundPointerMove}
+          onPointerUp={endBackgroundPan}
+          onPointerCancel={endBackgroundPan}
+        />
+        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+          {proposalPairs.size > 0 &&
+            nodes.map((a) =>
+              nodes
+                .filter((b) => b.id !== a.id && proposalPairs.has(pairKey(a.id, b.id)))
+                .map((b) => (
+                  <line
+                    key={`p-${a.id}-${b.id}`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke="#7cc4ff"
+                    strokeWidth={1.5 / view.k}
+                    strokeDasharray="5 4"
+                    opacity={0.8}
+                    pointerEvents="none"
+                  />
+                ))
+            )}
+          {linksRef.current.map((link) => {
+            const [sx, sy, tx, ty] = endpoints(link);
+            const active = recallEdges.has(link.id);
+            const invalid = link.edge.status === "invalidated";
+            const selected = selection?.kind === "edge" && selection.id === link.id;
+            return (
+              <g key={link.id}>
+                <line
+                  x1={sx}
+                  y1={sy}
+                  x2={tx}
+                  y2={ty}
+                  stroke="transparent"
+                  strokeWidth={Math.max(10 / view.k, 6)}
+                  onClick={() => onSelect({ kind: "edge", id: link.id })}
+                  style={{ cursor: "pointer" }}
+                >
+                  <title>{`${link.edge.type}: ${link.edge.description}`}</title>
+                </line>
+                <line
+                  x1={sx}
+                  y1={sy}
+                  x2={tx}
+                  y2={ty}
+                  stroke={selected ? "#ffffff" : active ? "#ffd166" : EDGE_COLOR[link.edge.type]}
+                  strokeWidth={(selected ? 3 : active ? 3 : 0.75 + link.edge.strength * 1.5) / Math.sqrt(view.k)}
+                  strokeDasharray={invalid ? "4 4" : undefined}
+                  opacity={invalid ? 0.35 : active ? 1 : 0.75}
+                  pointerEvents="none"
+                />
+              </g>
+            );
+          })}
+          {nodes.map((sim) => {
+            const n = sim.node;
+            const invalid = n.status === "invalidated";
+            const selected = selection?.kind === "node" && selection.id === n.id;
+            const recall = recallNodes.has(n.id);
+            const favored = overlays.favored === n.id;
+            return (
+              <g
+                key={n.id}
+                data-node={n.id}
+                onPointerDown={(e) => onNodePointerDown(e, sim)}
+                onPointerMove={(e) => onNodePointerMove(e, sim)}
+                onPointerUp={(e) => onNodePointerUp(e, sim)}
+                onPointerCancel={(e) => onNodePointerUp(e, sim)}
+                style={{ cursor: "grab", touchAction: "none" }}
+              >
+                <circle
+                  cx={sim.x}
+                  cy={sim.y}
+                  r={sim.r}
+                  fill={invalid ? "var(--graph-invalid)" : NODE_COLOR[n.type]}
+                  fillOpacity={invalid ? 0.4 : 0.35 + n.validity * 0.65}
+                  stroke={selected ? "#ffffff" : favored ? "#ffd166" : invalid ? "var(--graph-invalid)" : NODE_COLOR[n.type]}
+                  strokeWidth={(selected || favored ? 3 : recall ? 2.5 : 1) / Math.sqrt(view.k)}
+                  strokeDasharray={invalid ? "3 3" : undefined}
+                >
+                  <title>{`${n.type} · ${n.description}\nimportance ${n.importance.toFixed(2)} · validity ${n.validity.toFixed(2)} · ${n.status}`}</title>
+                </circle>
+                <text
+                  className="node-label"
+                  x={sim.x}
+                  y={(sim.y ?? 0) + sim.r + 9 / view.k}
+                  textAnchor="middle"
+                  fontSize={9 / Math.sqrt(view.k)}
+                >
+                  {truncate(n.description, 26)}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* top-left count chip */}
+      <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2">
+        <Badge variant="secondary" className="bg-background/90 shadow-sm backdrop-blur">
+          {nodes.length}
+          {visibleIds ? ` of ${snapshot?.nodes.length ?? nodes.length}` : ""} shown
+          {visibleIds ? " · filtered" : ""}
+        </Badge>
       </div>
-      <div className="body">
-        <div className="graph-wrap">
-          <svg
-            ref={svgRef}
-            className={`graph${panning ? " panning" : ""}`}
-            viewBox={`0 0 ${W} ${H}`}
-            onDoubleClick={(e) => {
-              // Double-click empty canvas zooms in at the cursor; shift+double-click zooms out.
-              if ((e.target as Element).closest("g[data-node]")) return;
-              zoomBy(e.shiftKey ? 1 / 1.4 : 1.4);
-            }}
-          >
-            <rect
-              className="graph-bg"
-              x={-4000}
-              y={-4000}
-              width={W + 8000}
-              height={H + 8000}
-              fill="transparent"
-              onPointerDown={onBackgroundPointerDown}
-              onPointerMove={onBackgroundPointerMove}
-              onPointerUp={endBackgroundPan}
-              onPointerCancel={endBackgroundPan}
-            />
-            <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-              {proposalPairs.size > 0 &&
-                nodes.map((a) =>
-                  nodes
-                    .filter((b) => b.id !== a.id && proposalPairs.has(pairKey(a.id, b.id)))
-                    .map((b) => (
-                      <line
-                        key={`p-${a.id}-${b.id}`}
-                        x1={a.x}
-                        y1={a.y}
-                        x2={b.x}
-                        y2={b.y}
-                        stroke="#7cc4ff"
-                        strokeWidth={1.5 / view.k}
-                        strokeDasharray="5 4"
-                        opacity={0.8}
-                        pointerEvents="none"
-                      />
-                    ))
-                )}
-              {linksRef.current.map((link) => {
-                const [sx, sy, tx, ty] = endpoints(link);
-                const active = recallEdges.has(link.id);
-                const invalid = link.edge.status === "invalidated";
-                const selected = selection?.kind === "edge" && selection.id === link.id;
-                return (
-                  <g key={link.id}>
-                    {/* Wide invisible hit-area so thin links are easy to click. */}
-                    <line
-                      x1={sx}
-                      y1={sy}
-                      x2={tx}
-                      y2={ty}
-                      stroke="transparent"
-                      strokeWidth={Math.max(10 / view.k, 6)}
-                      onClick={() => onSelect({ kind: "edge", id: link.id })}
-                      style={{ cursor: "pointer" }}
-                    >
-                      <title>{`${link.edge.type}: ${link.edge.description}`}</title>
-                    </line>
-                    <line
-                      x1={sx}
-                      y1={sy}
-                      x2={tx}
-                      y2={ty}
-                      stroke={selected ? "#ffffff" : active ? "#ffd166" : `var(--${link.edge.type})`}
-                      strokeWidth={(selected ? 3 : active ? 3 : 0.75 + link.edge.strength * 1.5) / Math.sqrt(view.k)}
-                      strokeDasharray={invalid ? "4 4" : undefined}
-                      opacity={invalid ? 0.35 : active ? 1 : 0.75}
-                      pointerEvents="none"
-                    />
-                  </g>
-                );
-              })}
-              {nodes.map((sim) => {
-                const n = sim.node;
-                const invalid = n.status === "invalidated";
-                const selected = selection?.kind === "node" && selection.id === n.id;
-                const recall = recallNodes.has(n.id);
-                const favored = overlays.favored === n.id;
-                return (
-                  <g
-                    key={n.id}
-                    data-node={n.id}
-                    onPointerDown={(e) => onNodePointerDown(e, sim)}
-                    onPointerMove={(e) => onNodePointerMove(e, sim)}
-                    onPointerUp={(e) => onNodePointerUp(e, sim)}
-                    onPointerCancel={(e) => onNodePointerUp(e, sim)}
-                    style={{ cursor: "grab", touchAction: "none" }}
-                  >
-                    <circle
-                      cx={sim.x}
-                      cy={sim.y}
-                      r={sim.r}
-                      fill={invalid ? "var(--invalid)" : NODE_COLOR[n.type]}
-                      fillOpacity={invalid ? 0.4 : 0.35 + n.validity * 0.65}
-                      stroke={selected ? "#ffffff" : favored ? "#ffd166" : invalid ? "var(--invalid)" : NODE_COLOR[n.type]}
-                      strokeWidth={(selected || favored ? 3 : recall ? 2.5 : 1) / Math.sqrt(view.k)}
-                      strokeDasharray={invalid ? "3 3" : undefined}
-                    >
-                      <title>{`${n.type} · ${n.description}\nimportance ${n.importance.toFixed(2)} · validity ${n.validity.toFixed(2)} · ${n.status}`}</title>
-                    </circle>
-                    <text
-                      className="node-label"
-                      x={sim.x}
-                      y={(sim.y ?? 0) + sim.r + 9 / view.k}
-                      textAnchor="middle"
-                      fontSize={9 / Math.sqrt(view.k)}
-                    >
-                      {truncate(n.description, 26)}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          </svg>
-        </div>
-        <div className="row muted graph-hint" style={{ marginTop: 6 }}>
-          <span className="chip">recall path</span>
-          <span className="chip">proposal</span>
-          <span className="chip">favored winner</span>
-          <span>scroll to zoom · drag canvas to pan · drag node to move · double-click to zoom · click empty space to deselect</span>
-        </div>
+
+      {/* top-right zoom controls */}
+      <div className="absolute right-3 top-3 flex items-center gap-1 rounded-lg border border-border bg-background/90 p-1 shadow-sm backdrop-blur">
+        <Button variant="ghost" size="icon-sm" title="Zoom out" onClick={() => zoomBy(1 / 1.2)}>
+          <Minus className="h-3.5 w-3.5" />
+        </Button>
+        <span className="min-w-11 text-center font-mono text-[11px] tabular-nums text-muted-foreground">
+          {Math.round(view.k * 100)}%
+        </span>
+        <Button variant="ghost" size="icon-sm" title="Zoom in" onClick={() => zoomBy(1.2)}>
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon-sm" title="Fit all nodes" onClick={fitView}>
+          <Maximize className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon-sm" title="Reset pan/zoom" onClick={resetView}>
+          <RotateCcw className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Layout physics"
+          onClick={() => setSettingsOpen((v) => !v)}
+          className={cn(settingsOpen && "bg-accent text-accent-foreground")}
+        >
+          <Settings2 className="h-3.5 w-3.5" />
+        </Button>
       </div>
+
+      {/* layout physics panel */}
+      {settingsOpen && (
+        <div className="absolute right-3 top-12 z-20 w-72 rounded-xl border border-border bg-background/95 p-3 shadow-lg backdrop-blur">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+              Layout physics
+            </span>
+            <button
+              type="button"
+              onClick={() => setPhysics(DEFAULT_PHYSICS)}
+              className="ml-auto cursor-pointer text-[11px] text-sky-500 hover:underline"
+            >
+              reset
+            </button>
+          </div>
+          <div className="space-y-2.5">
+            <div>
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">View</div>
+              <label className="flex cursor-pointer items-center gap-2 text-[11px]">
+                <Switch checked={showInvalidated} onCheckedChange={onShowInvalidatedChange} />
+                <span className="inline-flex items-center gap-1 text-muted-foreground">
+                  {showInvalidated ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                  Show invalidated
+                </span>
+              </label>
+            </div>
+            <div>
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">Loners (no links)</div>
+              <div className="space-y-1.5">
+                <PhysSlider label="Cluster pull" value={physics.isoGravity} min={0} max={1} step={0.01}
+                  onChange={(v) => setPhysics((p) => ({ ...p, isoGravity: v }))} />
+                <PhysSlider label="Repulsion" value={physics.isoCharge} min={0} max={300} step={1}
+                  onChange={(v) => setPhysics((p) => ({ ...p, isoCharge: v }))} />
+                <PhysSlider label="Min gap" value={physics.isoGap} min={0} max={40} step={1}
+                  onChange={(v) => setPhysics((p) => ({ ...p, isoGap: v }))} />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">Linked nodes</div>
+              <div className="space-y-1.5">
+                <PhysSlider label="Repulsion" value={physics.conCharge} min={0} max={400} step={1}
+                  onChange={(v) => setPhysics((p) => ({ ...p, conCharge: v }))} />
+                <PhysSlider label="Min gap" value={physics.conGap} min={0} max={40} step={1}
+                  onChange={(v) => setPhysics((p) => ({ ...p, conGap: v }))} />
+                <PhysSlider label="Link length" value={physics.linkDistance} min={20} max={200} step={1}
+                  onChange={(v) => setPhysics((p) => ({ ...p, linkDistance: v }))} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* bottom-left legend */}
+      <div className="pointer-events-none absolute bottom-3 left-3 hidden items-center gap-1.5 rounded-lg border border-border bg-background/90 px-2.5 py-1.5 shadow-sm backdrop-blur sm:flex">
+        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+          <span className="inline-block h-0.5 w-4 rounded bg-amber-300" /> recall
+        </span>
+        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+          <span className="inline-block h-0 w-4 border-t-2 border-dashed border-sky-300" /> proposal
+        </span>
+      </div>
+
+      {nodes.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="max-w-xs rounded-xl border border-dashed border-border bg-background/80 px-6 py-8 text-center backdrop-blur">
+            <div className="text-sm font-medium">No memories to show</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Remember something from the control panel, or clear the current filter.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -461,6 +611,49 @@ function endpoints(link: SimLink): [number, number, number, number] {
 
 function truncate(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n - 1)}…` : text;
+}
+
+function PhysSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="grid grid-cols-[72px_1fr_56px] items-center gap-2 text-[11px]">
+      <span className="text-muted-foreground">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={Math.min(Math.max(value, min), max)}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-1 w-full cursor-pointer appearance-none rounded-full bg-secondary"
+      />
+      <input
+        type="number"
+        min={0}
+        step={step}
+        value={step < 1 ? Number(value.toFixed(2)) : value}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (Number.isFinite(v) && v >= 0) onChange(v);
+        }}
+        title="Type an exact value (can exceed the slider range)"
+        className="h-6 w-full rounded border border-input bg-background px-1 text-right font-mono tabular-nums text-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      />
+    </label>
+  );
 }
 
 export { pairKey };

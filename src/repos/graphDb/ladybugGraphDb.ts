@@ -66,6 +66,36 @@ export class LadybugGraphDbRepo implements GraphDbRepo {
     if (this.ensureDir) {
       mkdirSync(dirname(this.dbPath), { recursive: true });
     }
+    try {
+      await this.openStrict();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/wal/i.test(message)) throw error;
+      // An abrupt owner death (e.g. the host killing the MCP stdio process
+      // without SIGTERM) can leave a torn WAL tail that fails checksum
+      // verification. Rather than refusing to start (which bricks the MCP
+      // server on every subsequent launch), reopen with tolerant WAL replay:
+      // the intact prefix is kept, only the corrupt tail is dropped.
+      console.error(`[memory] strict open failed (${message}); retrying with tolerant WAL replay`);
+      this.database = new Database(
+        this.dbPath,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        /* throwOnWalReplayFailure */ false
+      );
+      this.connection = new Connection(this.database);
+      await ensureSchema(this.connection);
+      // Seal the recovery so the next restart sees a clean WAL.
+      await this.connection.query("CHECKPOINT");
+      console.error("[memory] recovered with tolerant WAL replay; corrupt tail dropped");
+    }
+  }
+
+  private async openStrict(): Promise<void> {
     this.database = new Database(this.dbPath);
     this.connection = new Connection(this.database);
     await ensureSchema(this.connection);

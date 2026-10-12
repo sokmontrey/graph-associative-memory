@@ -88,6 +88,9 @@ export async function createMemoryStack(
     events,
     nodeRepo,
     edgeRepo,
+    // Share the low-level service so MCP ops, dashboard tick, and snapshots all
+    // advance the same DecayClock.
+    memory: service,
   });
   return {
     db,

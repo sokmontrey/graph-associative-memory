@@ -21,6 +21,11 @@ export interface MemoryNode {
     invalidated_at: Date | null;
     invalidate_reason: string | null;
     superseded_by: string | null;   // id of the memory that replaced this one
+    // Lazy-decay watermarks: snapshot of the global log-clock (see
+    // services/graphMemory/decay/) at this row's last settle. Pending decay =
+    // exp(global - watermark), applied on read.
+    decay_l_importance: number;
+    decay_l_validity: number;
 }
 
 export type MemoryEdge =
@@ -29,17 +34,18 @@ export type MemoryEdge =
     | RelatedToEdge
     | EvokesEdge;
 
-// New memories start active with full validity; those are not caller inputs.
+// New memories start active with full validity and a current decay watermark;
+// those are not caller inputs.
 export type NewMemoryNode = Omit<
     MemoryNode,
-    'id' | 'importance' | 'validity' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'superseded_by'
+    'id' | 'importance' | 'validity' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'superseded_by' | 'decay_l_importance' | 'decay_l_validity'
 >;
 
 export type NewMemoryEdge =
-    | Omit<SupportsEdge,     'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason'>
-    | Omit<ContradictsEdge,  'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason'>
-    | Omit<RelatedToEdge,    'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason'>
-    | Omit<EvokesEdge,       'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason'>;
+    | Omit<SupportsEdge,     'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'decay_l_strength'>
+    | Omit<ContradictsEdge,  'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'decay_l_strength'>
+    | Omit<RelatedToEdge,    'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'decay_l_strength'>
+    | Omit<EvokesEdge,       'id' | 'strength' | 'status' | 'last_reinforce' | 'invalidated_at' | 'invalidate_reason' | 'decay_l_strength'>;
 
 // Two nodes point to the same pattern
 export interface SupportsEdge extends BaseMemoryEdge {
@@ -71,6 +77,9 @@ export interface BaseMemoryEdge {
     last_reinforce: Date;
     invalidated_at: Date | null;
     invalidate_reason: string | null;
+    // Lazy-decay watermark: snapshot of the global strength log-clock at last
+    // settle (see services/graphMemory/decay/).
+    decay_l_strength: number;
 }
 
 // --- Storage shapes (mirror the Ladybug tables in src/db/schema.ts) ---
@@ -88,6 +97,8 @@ export const MEMORY_NODE_FIELDS = [
     "invalidated_at",
     "invalidate_reason",
     "superseded_by",
+    "decay_l_importance",
+    "decay_l_validity",
     "embedding",
 ] as const;
 
@@ -102,6 +113,8 @@ export const MemoryNodeSchema = z.object({
     invalidated_at: z.coerce.date().nullable(),
     invalidate_reason: z.string().nullable(),
     superseded_by: z.string().nullable(),
+    decay_l_importance: z.number().nullable(),
+    decay_l_validity: z.number().nullable(),
     embedding: z.array(z.number()).nullable(),
 });
 
@@ -119,6 +132,8 @@ export interface MemoryNodeUpsert {
     invalidated_at: Date | null;
     invalidate_reason: string | null;
     superseded_by: string | null;
+    decay_l_importance: number;
+    decay_l_validity: number;
     embedding: number[];
 }
 
@@ -151,6 +166,10 @@ function toMemoryNode(parsed: MemoryNodeRow): MemoryNode {
         invalidated_at: parsed.invalidated_at,
         invalidate_reason: parsed.invalidate_reason,
         superseded_by: parsed.superseded_by,
+        // Pre-decay rows have no watermark: genesis clock (0.0) means they owe
+        // decay since the clock began.
+        decay_l_importance: parsed.decay_l_importance ?? 0,
+        decay_l_validity: parsed.decay_l_validity ?? 0,
     };
 }
 
@@ -179,6 +198,7 @@ const MemoryEdgeRowSchema = z.object({
     e_last_reinforce: z.coerce.date(),
     e_invalidated_at: z.coerce.date().nullable(),
     e_invalidate_reason: z.string().nullable(),
+    e_decay_l_strength: z.number().nullable(),
 });
 
 export function mapMemoryEdge(row: GraphRow): MemoryEdge {
@@ -194,5 +214,6 @@ export function mapMemoryEdge(row: GraphRow): MemoryEdge {
         invalidate_reason: parsed.e_invalidate_reason,
         type: parsed.e_type,
         description: parsed.e_description,
+        decay_l_strength: parsed.e_decay_l_strength ?? 0,
     };
 }
