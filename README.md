@@ -1,7 +1,6 @@
 # Associative Graph Memory
 
-An experimental long-term associative memory system for AI agent harnesses.
-This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system.
+An experimental long-term associative memory system for AI agent harnesses. This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system. 
 
 ## The core idea
 
@@ -22,7 +21,7 @@ It has to know what it doesn't know. And oftentimes, it never performs this well
 
 ## Next step
 
-A thin gap identification layer for the agent that automatically searches, consolidates, and injects context directly to the agent.
+A system1 model (Jev by Typesafe) is currently used to propose links between memories as an attempt to reduce the need for the agent to think. But a thin gap identification layer for the agent that automatically searches, consolidates, and injects context directly to the agent should be explored. Before this can become a system1 memory system on its own.
 
 ## Installation
 
