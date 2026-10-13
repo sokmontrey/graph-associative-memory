@@ -2,12 +2,9 @@
 // here — the single write path for edges. TS narrows at compile time,
 // assert functions reject bad values at runtime.
 
-// MemoryNode kinds (single MemoryNode table with `type` discriminator).
 export const MEMORY_NODE_TYPES = ["preference", "trait", "observation"] as const;
 export type MemoryNodeType = (typeof MEMORY_NODE_TYPES)[number];
 
-// Memory↔memory edge kinds (single MEMORY_RELATES_TO table with `type`
-// discriminator). description is unified across all four kinds.
 export const MEMORY_EDGE_TYPES = [
   "supports",
   "contradicts",
@@ -25,7 +22,6 @@ export const MEMORY_STATUS_INVALIDATED = "invalidated";
 export const MEMORY_STATUSES = [MEMORY_STATUS_ACTIVE, MEMORY_STATUS_INVALIDATED] as const;
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 
-// Memory table wiring shared by the memory service and search providers.
 export const MEMORY_NODE_LABEL = "MemoryNode";
 export const MEMORY_EDGE_TABLE = "MEMORY_RELATES_TO";
 export const MEMORY_EMBEDDING_PROPERTY = "embedding";

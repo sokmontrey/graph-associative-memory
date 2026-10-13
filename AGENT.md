@@ -61,6 +61,39 @@ Writes:
 
 All tool results are JSON text.
 
+## Mindful use (never forget, never overuse)
+
+Session loop — start once, middle only when needed, end only for durable facts:
+
+1. **START (once per task).** `memory_stats` only if graph size matters, then
+   `memory_get_top_importance` **once** with `n <= 10` (stored preference: keep
+   `n` small). Prefer `semanticQuery` to narrow by topic over a large `n`.
+   Do NOT poll top every turn.
+2. **MIDDLE (only to explain a connection).** `memory_recall` only to
+   reconstruct *how two ideas connect* before explaining it — it strengthens
+   edges, so it is NOT a pure read and NOT a lookup. Budget 1–2 recalls per
+   question; add `searchHints` if the path is empty instead of retrying.
+   For lookup, use `memory_get_top_importance` + `semanticQuery`.
+3. **END (only for durable facts).** `memory_remember` in **one batch** at task
+   end: preferences, traits, long-lived observations only — never ephemeral
+   chat. Stored preferences, now enforced by the tool descriptions:
+   - **Atomic memories**: one fact per memory, break stories into small linked
+     pieces, not single composites. Check `semanticQuery` first to avoid
+     duplicates.
+   - **Propose once**: after the batch, run `memory_propose_links` **once**
+     (prefer `focusId`; if propose fails or returns nothing usable, connect
+     manually). Connect only links you can justify; drop the rest. Never
+     re-propose in a loop.
+4. **BELIEF (only on evidence).** `memory_reinforce` / `memory_corroborate`
+   only after a memory proves useful or independent evidence agrees — never
+   speculatively. `memory_challenge` for soft doubt, `memory_invalidate` only
+   when you know it is wrong, `memory_resolve_contradiction` only for a
+   decided head-to-head (see contradiction loop). `memory_get_node` only to
+   inspect a shortlisted id, never to scan the graph.
+
+Anti-patterns: top-every-turn, recall-as-search, remember-everything,
+propose-until-something-sticks, reinforce/corroborate loops.
+
 ## The contradiction loop (the important workflow)
 
 1. **Detect.** Either `memory_propose_links` returns a proposal with `edgeType: "contradicts"`

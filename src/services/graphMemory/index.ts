@@ -74,9 +74,5 @@ export interface MemoryService {
 
     // Manual big hammer: advances the clock by the legacy bulk factors (lazy,
     // O(1) — no row scan). Rows settle on their next read or mutation.
-
-    // Manual big hammer: advances the clock by the legacy bulk factors (lazy,
-    // O(1) — no row scan). Rows settle on their next read or mutation.
-    // Reinforce happens only via the explicit reinforce* methods above.
     tick(): Promise<void>;
 }

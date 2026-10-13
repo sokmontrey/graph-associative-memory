@@ -1,37 +1,28 @@
-# associative-graph-memory
+# Associative Graph Memory
 
-Long-term memory for AI agents. Save what the agent learns, surface what's
-relevant now, and correct what's wrong — outdated ideas fade, contradictions
-get resolved, nothing is silently lost.
+An experimental long-term associative memory system for AI agent harnesses.
+This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system.
 
-Connects over MCP tools plus a live dashboard: the agent remembers, links,
-and recalls; you watch the graph update in realtime.
+## The core idea
 
-## How it works
+- Every memory node has a half-life value that decays over time, indicating how important it is compared to others.
+- High-importance nodes show up regularly in the top query results.
+- Agents are restricted to tools that allow them to only query the immediate nodes that "come to mind".
+- If the agent needs to find any specific details, it will have to do graph walking, which strengthens the edges between nodes.
+- These stronger edges will also show up more regularly than the rest when the agent reads the edges of a node.
 
-- **Everything has a half-life.** Nodes carry `importance`, edges carry
-  `strength`. Both fade over time.
-- **Important nodes surface.** High-importance memories show up regularly in
-  top results.
-- **Strong edges connect.** Well-used paths make graph walks reach their goal
-  faster and better.
-- **Use makes strong.** Reading a node or walking an edge reinforces it — the
-  more it's used, the longer it lives.
-- **Recall beats lookup.** Instead of fetching a node directly, the agent
-  walks from a start idea to a goal idea (`recall`). The walked edges and the
-  used goal node grow stronger, so knowledge is found by association. This
-  avoids the rich-get-richer trap, where the already-strongest nodes would
-  otherwise win every time and the rest never gets visited.
-- **Forgetting is automatic.** A lazy global decay clock quietly fades unused
-  nodes and edges; the dashboard `tick` button applies one big forgetting
-  step.
-- **Second opinions included.** `propose_links` uses Jev to suggest how two
-  memories relate and which side to keep on conflict (you decide), and a
-  separate belief score (`validity`) lets the agent doubt or correct a memory
-  without deleting it.
-- **Comprehensive dashboard.** Live graph, every operation step-by-step,
-  node/link inspector, controls to run any op, and semantic search — watch
-  memory strengthen, fade, and rewire in realtime.
+## Limitations
+
+This is an effortful memory system.
+Agents need to intentionally look for "what's missing", which is a very difficult task at the moment.
+It has to know what it doesn't know. And oftentimes, it never performs this well.
+
+> [!NOTE]
+> Due to this limitation, users will have to guide and instruct the agent to use the memory.
+
+## Next step
+
+A thin gap identification layer for the agent that automatically searches, consolidates, and injects context directly to the agent.
 
 ## Installation
 
@@ -90,13 +81,15 @@ Generic stdio wiring:
 
 ```json
 {
-  "mcpServers": {
-    "associative-memory": {
-      "command": "node",
-      "args": ["/absolute/path/to/associative-graph-memory/src/runtime/start.ts"],
-      "env": { "TYPESAFE_API_KEY": "..." }
+    "mcpServers": {
+        "associative-memory": {
+            "command": "node",
+            "args": [
+                "/absolute/path/to/associative-graph-memory/src/runtime/start.ts"
+            ],
+            "env": { "TYPESAFE_API_KEY": "..." }
+        }
     }
-  }
 }
 ```
 

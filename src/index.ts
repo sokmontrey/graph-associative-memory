@@ -26,7 +26,7 @@ import {
 export type MemoryStackOptions = {
   /** Overrides DB_PATH (shared french-learning-2 DB / LBUG_DB_PATH). */
   dbPath?: string;
-  /** Defaults to the FastEmbed e5 model (downloads ~2 GB on first use). */
+  /** Defaults to EmbeddingGemma-300M (downloads ~300 MB on first use). */
   embedder?: TextEmbedder;
   /** Defaults to vector search over the node embeddings. */
   search?: MemorySearchProvider;

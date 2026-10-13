@@ -12,7 +12,7 @@ export interface TextEmbedder {
   readonly dimensions: number;
   embed(text: string): Promise<Vector>;
   embedMany(texts: readonly string[]): Promise<readonly Vector[]>;
-  // Asymmetric retrieval (e.g. e5's query:/passage: prefixes). Optional so
+  // Asymmetric retrieval (query vs document prompts). Optional so
   // plain models stay compatible; default helpers below fall back to
   // embed/embedMany when absent.
   embedQuery?(text: string): Promise<Vector>;

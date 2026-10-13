@@ -130,8 +130,7 @@ export class StoredEmbeddingVectorIndex implements VectorIndex {
   }
 }
 
-// Prefer HNSW, degrade to brute force. Never throws: the stored-embedding
-// index only needs the embedding column to exist (ensureSchema).
+// Never throws: falls back to brute force when HNSW is unavailable.
 export async function createNodeVectorIndex(db: GraphDbRepo): Promise<VectorIndex> {
   const hnsw = new LadybugVectorIndex(db);
   try {

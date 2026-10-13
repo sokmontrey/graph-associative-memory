@@ -74,7 +74,6 @@ export interface HighlevelMemoryService {
     setValidity(memoryId: string, validity: number): Promise<MemoryNode>;
 }
 
-// "all" = no type filter.
 export type MemoryTypeFilter = MemoryNodeType | "all";
 
 export interface ProposeLinksOptions {

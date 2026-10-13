@@ -175,7 +175,6 @@ export async function createDashboardServer(
       return sendJson(res, 404, { error: "not found" });
     }
 
-    // Static assets with SPA fallback.
     const target = path === "/" ? "/index.html" : path;
     const filePath = join(distDir, target);
     if (!filePath.startsWith(distDir)) return sendJson(res, 403, { error: "forbidden" });

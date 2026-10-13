@@ -164,7 +164,6 @@ export class GraphMemoryService implements MemoryService {
     );
   }
 
-  /** Edge counterpart of settleNodesForRead. */
   async settleEdgesForRead(edges: MemoryEdge[]): Promise<MemoryEdge[]> {
     const clock = this.clock.snapshot();
     const out: MemoryEdge[] = [];
@@ -209,7 +208,6 @@ export class GraphMemoryService implements MemoryService {
     });
   }
 
-  /** Pure projection counterpart for edges. */
   projectSettledEdges(edges: MemoryEdge[]): MemoryEdge[] {
     const clock = this.clock.snapshot();
     return edges.map((edge) => {

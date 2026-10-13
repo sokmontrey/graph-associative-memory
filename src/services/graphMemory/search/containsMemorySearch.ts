@@ -9,7 +9,7 @@ function tokenize(query: string): string[] {
   return query.toLowerCase().split(/\s+/).filter((token) => token.length > 0);
 }
 
-// Offline lexical fallback: token-AND CONTAINS with hit-count scoring. No
+// Offline lexical fallback: token-OR CONTAINS with hit-count scoring. No
 // model, no extension — used when embeddings are unavailable.
 export class ContainsMemorySearch implements MemorySearchProvider {
   private readonly db: GraphDbRepo;
