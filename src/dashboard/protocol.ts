@@ -55,6 +55,8 @@ export interface StateSnapshot {
 }
 
 // UI-triggerable operations (also what an agent would do, minus the MCP layer).
+// `inspect` / `stats` / `setValidity` exist so remote MCP clients can proxy the
+// full HighlevelMemoryService contract through /api/op.
 export type OpName =
   | "getTopImportance"
   | "recall"
@@ -66,7 +68,10 @@ export type OpName =
   | "corroborate"
   | "invalidate"
   | "reinstate"
-  | "resolveContradiction";
+  | "resolveContradiction"
+  | "inspect"
+  | "stats"
+  | "setValidity";
 
 export interface OpRequest {
   op: OpName;

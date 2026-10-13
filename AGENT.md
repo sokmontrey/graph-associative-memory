@@ -154,14 +154,24 @@ npm install
 npm run serve     # MCP over stdio + dashboard at http://127.0.0.1:4317
 ```
 
-Env: `LBUG_DB_PATH` (default `./data/ladybug`, isolated), `MEMORY_PORT` (default 4317),
+Env: `MEMORY_DB_PATH` (default `./data/ladybug`, isolated; `LBUG_DB_PATH`
+still honoured as a legacy fallback), `MEMORY_PORT` (default 4317),
 `MEMORY_MCP=0` / `MEMORY_DASHBOARD=0`, `TYPESAFE_API_KEY` (required by `memory_propose_links`,
 which calls the TypeSafe/Jev grounded model), and `MEMORY_GEMMA_DTYPE` (embedder quantization).
 The embedder is EmbeddingGemma-300M (768 dims); its ~300 MB model downloads once on first run,
 then everything runs offline.
 
-**One process owns the database** (Ladybug is embedded, single-process). The MCP server and
-dashboard are the same process; don't run a second copy against the same `LBUG_DB_PATH`.
+**One process owns the database** (Ladybug is embedded, single-process). The first
+`src/runtime/start.ts` to open it serves MCP + dashboard together; any further
+process (second OpenCode window, another harness) that cannot open the same file
+does not crash — it probes the owner's dashboard (`MEMORY_OWNER_URL`, default
+`http://127.0.0.1:MEMORY_PORT`) and serves the same MCP tools as a remote HTTP
+client. Keep the owner's dashboard enabled for sharing.
+
+Entries: `src/runtime/start.ts` is the process entry (MCP stdio + dashboard),
+`src/stack.ts` is the wiring entry (`createMemoryStack`), `src/index.ts` is the
+thin public library entry (re-exports only), `src/db/index.ts` resolves the
+isolated DB path.
 
 ### Host wiring (stdio)
 
@@ -219,8 +229,5 @@ operation as it happens:
 
 ## Notes
 
-- Shared DB: pointing `LBUG_DB_PATH` at another project's database (e.g. `french-learning-2`)
-  works, because the validity columns are added by an additive migration with defaults. That
-  mutates the shared schema (additively); prefer the isolated default for experiments.
 - The dashboard's wire types are duplicated in `dashboard/src/types.ts`; keep them in sync with
   `src/dashboard/protocol.ts` and `src/services/highlevelMemory/events.ts`.

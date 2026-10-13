@@ -6,11 +6,11 @@ import { z } from "zod";
 import type { MemoryEdge, MemoryNode, MemoryNodeType } from "../models/memory.ts";
 import { memoryRank } from "../models/memory.ts";
 import type { MemoryService } from "../services/graphMemory/index.ts";
-import type { HighlevelMemoryService } from "../services/highlevelMemory/highlevelMemoryService.ts";
+import type { HighlevelMemoryService as HighlevelMemoryServiceContract } from "../services/highlevelMemory/index.ts";
 import type { MemoryEventBus } from "../services/highlevelMemory/events.ts";
 
 export type MemoryMcpDeps = {
-  highlevel: HighlevelMemoryService;
+  highlevel: HighlevelMemoryServiceContract;
   service: MemoryService;
   events?: MemoryEventBus;
 };

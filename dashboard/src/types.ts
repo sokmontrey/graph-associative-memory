@@ -75,4 +75,7 @@ export type OpName =
   | "corroborate"
   | "invalidate"
   | "reinstate"
-  | "resolveContradiction";
+  | "resolveContradiction"
+  | "inspect"
+  | "stats"
+  | "setValidity";

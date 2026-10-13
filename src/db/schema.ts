@@ -68,8 +68,7 @@ const SCHEMA_STATEMENTS = [
 
 // Idempotent additive migration for databases created before the validity
 // lifecycle existed. ADD IF NOT EXISTS with a DEFAULT backfills existing rows,
-// so pre-existing memories become active with full validity. Additive columns
-// don't break other readers of the shared database.
+// so pre-existing memories become active with full validity.
 const MIGRATION_STATEMENTS = [
   `ALTER TABLE MemoryNode ADD IF NOT EXISTS validity DOUBLE DEFAULT 1.0;`,
   `ALTER TABLE MemoryNode ADD IF NOT EXISTS status STRING DEFAULT 'active';`,
@@ -115,7 +114,7 @@ async function assertEmbeddingDimensions(conn: Connection): Promise<void> {
   if (actual !== null && actual !== expected) {
     throw new Error(
       `MemoryNode.embedding is ${actual} but this build uses ${expected}. ` +
-        `Remove the database (or point LBUG_DB_PATH at another path) to recreate it.`
+        `Remove the database (or point MEMORY_DB_PATH at another path) to recreate it.`
     );
   }
 }

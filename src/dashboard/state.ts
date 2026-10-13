@@ -1,6 +1,6 @@
 import { MEMORY_EDGE_TABLE } from "../db/relations.ts";
 import { memoryRank, mapMemoryEdge } from "../models/memory.ts";
-import type { MemoryStack } from "../index.ts";
+import type { MemoryStack } from "../stack.ts";
 import type { StateSnapshot, WireEdge, WireNode } from "./protocol.ts";
 
 // Full graph snapshot for the dashboard: every node and edge, including soft

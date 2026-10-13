@@ -1,61 +1,136 @@
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { DB_PATH } from "../db/index.ts";
-import { createMemoryStack } from "../index.ts";
+import { createMemoryStack } from "../stack.ts";
 import { createDashboardServer, type DashboardServer } from "../dashboard/server.ts";
 import { createMemoryMcpServer } from "../mcp/server.ts";
+import { NOOP_MEMORY_EVENTS } from "../services/highlevelMemory/events.ts";
+import { probeOwner, RemoteHighlevelMemoryService } from "./remoteHighlevel.ts";
 
-// One process owns the embedded (single-process) database, serving the MCP
-// tools over stdio and the dashboard over HTTP/SSE at the same time.
+// Process entry: one process owns the embedded (single-process) database,
+// serving MCP over stdio and the dashboard over HTTP/SSE together. Any
+// further process that cannot open the DB file (second OpenCode window,
+// another harness) does NOT crash: it probes the owner's dashboard and
+// serves the same MCP tools as a remote HTTP client instead.
 const port = Number(process.env["MEMORY_PORT"] ?? 4317);
 const enableMcp = process.env["MEMORY_MCP"] !== "0";
 const enableDashboard = process.env["MEMORY_DASHBOARD"] !== "0";
+const ownerBaseUrl =
+  process.env["MEMORY_OWNER_URL"] ?? `http://127.0.0.1:${port}`;
 
-// Embedder is EmbeddingGemma-300M; its ~300 MB model downloads once on first
-// use, then runs offline.
-let stack: Awaited<ReturnType<typeof createMemoryStack>>;
-try {
-  stack = await createMemoryStack({ dbPath: DB_PATH });
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[memory] cannot open the database at ${DB_PATH}: ${message}`);
-  console.error(
-    "[memory] a backup of data/ladybug (+ .wal) may let you retry; " +
-      "tolerant WAL replay already runs automatically, so a repeat of this " +
-      "error is not a torn WAL — inspect the message before deleting anything."
-  );
-  process.exit(1);
-}
+type OwnedResources = {
+  mode: "owner";
+  stack: Awaited<ReturnType<typeof createMemoryStack>>;
+  dashboard: DashboardServer | null;
+};
 
-let dashboard: DashboardServer | null = null;
-// memory_propose_links is the only op needing credentials; warn once instead
-// of failing late with a bare missing-key error (todo b5af1b54).
-if (!process.env["TYPESAFE_API_KEY"]) {
-  console.error(
-    "[memory] TYPESAFE_API_KEY is not set — memory_propose_links will fail; " +
-      "set it in .env (repo root, see .env.example) or the host environment."
-  );
-}
-if (enableDashboard) {
+type RemoteResources = {
+  mode: "remote";
+  highlevel: RemoteHighlevelMemoryService;
+};
+
+let owned: OwnedResources | null = null;
+let remote: RemoteResources | null = null;
+
+async function boot(): Promise<OwnedResources | RemoteResources | null> {
+  // Embedder is EmbeddingGemma-300M; its ~300 MB model downloads once on first
+  // use, then runs offline. Remote mode never touches it.
   try {
-    dashboard = await createDashboardServer({ stack, port });
-    console.error(`[memory] dashboard: ${dashboard.url}`);
+    const stack = await createMemoryStack({ dbPath: DB_PATH });
+    return { mode: "owner", stack, dashboard: null };
   } catch (error) {
-    // A busy port must not take the MCP server down with it.
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[memory] dashboard disabled (port ${port}): ${message}`);
+    console.error(`[memory] cannot open the database at ${DB_PATH}: ${message}`);
+    // Before giving up, check whether another instance already owns the DB
+    // and serves the dashboard — if so, become a remote MCP client of it.
+    if (await probeOwner(ownerBaseUrl)) {
+      console.error(
+        `[memory] database is owned by another instance — ` +
+          `serving MCP as a remote client of ${ownerBaseUrl} (no local DB handle)`
+      );
+      return { mode: "remote", highlevel: new RemoteHighlevelMemoryService({ baseUrl: ownerBaseUrl }) };
+    }
+    console.error(
+      "[memory] no owner dashboard answered at " +
+        `${ownerBaseUrl}/healthz, so remote fallback is unavailable. ` +
+        "If another instance holds the DB lock, keep its dashboard enabled " +
+        "(MEMORY_DASHBOARD=1); otherwise a backup of data/ladybug (+ .wal) may " +
+        "let you retry. Tolerant WAL replay already runs automatically, so a " +
+        "repeat of this error is not a torn WAL — inspect the message before " +
+        "deleting anything."
+    );
+    process.exit(1);
+    return null;
+  }
+}
+
+const resources = await boot();
+if (resources?.mode === "owner") {
+  owned = resources;
+  // memory_propose_links is the only op needing credentials; warn once instead
+  // of failing late with a bare missing-key error (todo b5af1b54). Remote
+  // mode needs no key — the owner grounds.
+  if (!process.env["TYPESAFE_API_KEY"]) {
+    console.error(
+      "[memory] TYPESAFE_API_KEY is not set — memory_propose_links will fail; " +
+        "set it in .env (repo root, see .env.example) or the host environment."
+    );
+  }
+  if (enableDashboard) {
+    try {
+      owned.dashboard = await createDashboardServer({ stack: owned.stack, port });
+      console.error(`[memory] dashboard: ${owned.dashboard.url}`);
+    } catch (error) {
+      // A busy port must not take the MCP server down with it.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[memory] dashboard disabled (port ${port}): ${message}`);
+    }
+  }
+} else if (resources?.mode === "remote") {
+  remote = resources;
+  if (enableDashboard) {
+    console.error(
+      `[memory] remote mode: dashboard is served by the owner at ${ownerBaseUrl}; ` +
+        `not starting a local one.`
+    );
   }
 }
 
 let mcpHandle: { close(): Promise<void> } | null = null;
 if (enableMcp) {
-  mcpHandle = serveStdio(() =>
-    createMemoryMcpServer({
-      highlevel: stack.highlevel,
-      service: stack.service,
-      events: stack.events,
-    })
-  );
-  console.error("[memory] mcp: stdio");
+  if (owned) {
+    const { stack } = owned;
+    mcpHandle = serveStdio(() =>
+      createMemoryMcpServer({
+        highlevel: stack.highlevel,
+        service: stack.service,
+        events: stack.events,
+      })
+    );
+    console.error("[memory] mcp: stdio (owner)");
+  } else if (remote) {
+    // createMemoryMcpServer only uses `highlevel` today (`service`/`events`
+    // are accepted but unused), so a remote highlevel is sufficient. Pass a
+    // dummy service that throws if a future tool path ever needs it.
+    const { highlevel } = remote;
+    const remoteUrl = ownerBaseUrl;
+    mcpHandle = serveStdio(() =>
+      createMemoryMcpServer({
+        highlevel,
+        service: new Proxy(
+          {},
+          {
+            get: () => () => {
+              throw new Error(
+                `remote MCP client has no local DB handle (owner: ${remoteUrl})`
+              );
+            },
+          }
+        ) as never,
+        events: NOOP_MEMORY_EVENTS,
+      })
+    );
+    console.error("[memory] mcp: stdio (remote)");
+  }
 }
 
 let shuttingDown = false;
@@ -63,17 +138,21 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.error(`[memory] shutting down (${signal})`);
-  if (dashboard) await dashboard.close();
+  if (owned?.dashboard) await owned.dashboard.close();
   if (mcpHandle) await mcpHandle.close();
-  // Checkpoint before closing so an abrupt death later has less WAL to lose.
-  // (db.close() also flushes, but an explicit CHECKPOINT seals it first.)
-  try {
-    await stack.db.query("CHECKPOINT");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[memory] checkpoint on shutdown failed: ${message}`);
+  if (owned) {
+    // Checkpoint before closing so an abrupt death later has less WAL to lose.
+    // (db.close() also flushes, but an explicit CHECKPOINT seals it first.)
+    try {
+      await owned.stack.db.query("CHECKPOINT");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[memory] checkpoint on shutdown failed: ${message}`);
+    }
+    await owned.stack.close();
   }
-  await stack.close();
+  // Remote mode holds no DB handle or port: nothing else to release, so a
+  // second harness exiting can never corrupt the owner's WAL.
   process.exit(signal.startsWith("fatal:") ? 1 : 0);
 }
 
@@ -91,6 +170,8 @@ process.on("SIGPIPE", () => void shutdown("SIGPIPE"));
 // which would brick the next launch. Poll for that and bow out cleanly.
 // (stdin 'end'/'close' is deliberately NOT used: incidental pipes and
 // /dev/null reach EOF immediately and would kill a healthy server.)
+// Remote clients hold neither lock nor port, but exiting on orphan still
+// avoids piling up stale stdio proxies.
 const parentPidAtStart = process.ppid;
 let orphanTimer: NodeJS.Timeout | null = null;
 if (parentPidAtStart !== 1) {

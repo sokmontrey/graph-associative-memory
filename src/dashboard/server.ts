@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { MemoryStack } from "../index.ts";
+import type { MemoryStack } from "../stack.ts";
 import type { MemoryEvent } from "../services/highlevelMemory/events.ts";
 import { buildSnapshot } from "./state.ts";
 import type { OpRequest } from "./protocol.ts";
@@ -99,6 +99,15 @@ function dispatch(stack: MemoryStack, req: OpRequest): Promise<unknown> {
         String(args["dropId"]),
         String(args["rationale"]),
         args["evidence"] as Record<string, number> | undefined
+      );
+    case "inspect":
+      return highlevel.inspect(String(args["memoryId"] ?? args["id"]));
+    case "stats":
+      return highlevel.stats();
+    case "setValidity":
+      return highlevel.setValidity(
+        String(args["memoryId"]),
+        Number(args["validity"])
       );
     default:
       return Promise.reject(new Error(`unknown op ${JSON.stringify(req.op)}`));

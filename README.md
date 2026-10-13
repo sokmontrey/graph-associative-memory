@@ -56,8 +56,13 @@ type, size = importance, opacity = validity, dashed grey = invalidated),
 every op with its steps/duration, a node/link inspector, and controls to run
 any op (including belief ops and `tick`) without an agent.
 
-Single-process rule: don't run two processes against the same `LBUG_DB_PATH`.
-`MEMORY_MCP=0` / `MEMORY_DASHBOARD=0` disable either half.
+Single-process ownership: the first `start.ts` to open `MEMORY_DB_PATH`
+owns the embedded DB and serves the dashboard. Any further process (second
+OpenCode window, another harness) that cannot open the same file does not
+crash — it probes the owner's dashboard (`MEMORY_OWNER_URL`, default
+`http://127.0.0.1:MEMORY_PORT`) and serves the same MCP tools as a remote
+HTTP client. Keep the owner's dashboard enabled (`MEMORY_DASHBOARD=1`) for
+sharing; `MEMORY_MCP=0` / `MEMORY_DASHBOARD=0` disable either half.
 `npm run explorer` launches the Ladybug explorer (Docker) on `./data`.
 
 ### 2. Use as a library
