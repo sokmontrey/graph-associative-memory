@@ -1,3 +1,5 @@
+![a screenshot of the memory dashboard](/assets/readme/dashboard.png)
+
 # Associative Graph Memory
 
 An experimental long-term **effortful** graph memory system for AI agent harnesses. This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system. 
