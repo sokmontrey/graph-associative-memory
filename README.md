@@ -1,6 +1,6 @@
 # Associative Graph Memory
 
-An experimental long-term associative memory system for AI agent harnesses. This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system. 
+An experimental long-term **effortful** graph memory system for AI agent harnesses. This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system. 
 
 ## The core idea
 
@@ -12,7 +12,7 @@ An experimental long-term associative memory system for AI agent harnesses. This
 
 ## Limitations
 
-This is an effortful memory system.
+This is an **effortful** memory system.
 Agents need to intentionally look for "what's missing", which is a very difficult task at the moment.
 It has to know what it doesn't know. And oftentimes, it never performs this well.
 
