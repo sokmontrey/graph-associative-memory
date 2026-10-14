@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Eraser, PanelLeftClose, PanelRightClose, X } from "lucide-react";
-import { fetchState, runOp, subscribe, tick } from "./api.ts";
+import { fetchState, runOp, subscribe } from "./api.ts";
 import type { MemoryEvent, OpName, StateSnapshot } from "./types.ts";
 import { StatsBar } from "./components/StatsBar.tsx";
-import { GraphView, pairKey, type Overlays } from "./components/GraphView.tsx";
+import { GraphView, type Overlays } from "./components/GraphView.tsx";
 import { OperationsTimeline, opNodeIds } from "./components/OperationsTimeline.tsx";
 import { Inspector, type Selection } from "./components/Inspector.tsx";
 import { SemanticSearch } from "./components/SemanticSearch.tsx";
@@ -13,42 +13,7 @@ import { Button } from "./components/ui/button.tsx";
 import { Badge } from "./components/ui/badge.tsx";
 import { ScrollArea } from "./components/ui/scroll-area.tsx";
 
-const EMPTY_OVERLAYS: Overlays = {
-  recallEdges: [],
-  recallNodes: [],
-  proposalPairs: [],
-  favored: null,
-};
-
-function reduceOverlays(prev: Overlays, event: MemoryEvent): Overlays {
-  if (event.type === "op:start" && event.op === "recall") return { ...EMPTY_OVERLAYS };
-  if (event.type === "op:start" && event.op === "proposeLinks")
-    return { ...prev, proposalPairs: [], favored: null };
-  if (event.type !== "step") return prev;
-
-  const phase = event.phase;
-  const detail = event.detail;
-  if (phase === "anchors" || phase === "goals") {
-    const ids = (detail["ids"] as string[] | undefined) ?? [];
-    return { ...prev, recallNodes: union(prev.recallNodes, ids) };
-  }
-  if (phase === "hop") {
-    return {
-      ...prev,
-      recallEdges: union(prev.recallEdges, [String(detail["edgeId"])]),
-      recallNodes: union(prev.recallNodes, [String(detail["fromId"]), String(detail["toId"])]),
-    };
-  }
-  if (phase === "ground") {
-    const pair = pairKey(String(detail["fromId"]), String(detail["toId"]));
-    return {
-      ...prev,
-      proposalPairs: union(prev.proposalPairs, [pair]),
-      favored: detail["favoredId"] ? String(detail["favoredId"]) : prev.favored,
-    };
-  }
-  return prev;
-}
+const EMPTY_OVERLAYS: Overlays = { highlightNodes: [], highlightEdges: [] };
 
 function union(list: string[], extra: string[]): string[] {
   const set = new Set(list);
@@ -56,12 +21,40 @@ function union(list: string[], extra: string[]): string[] {
   return [...set];
 }
 
+// Collect node/edge ids from an op result so the graph can highlight them.
+function idsFromResult(result: unknown, snapshot: StateSnapshot | null): { nodes: string[]; edges: string[] } {
+  const nodes: string[] = [];
+  const edges: string[] = [];
+  const edgeById = new Map((snapshot?.edges ?? []).map((e) => [e.id, e]));
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record["id"] === "string") {
+      const id = record["id"] as string;
+      if (typeof record["content"] === "string") nodes.push(id);
+      else if (typeof record["relation"] === "string") {
+        edges.push(id);
+        const e = edgeById.get(id);
+        if (e) nodes.push(e.from, e.to);
+      } else nodes.push(id);
+    }
+    if (typeof record["from"] === "string" && typeof record["to"] === "string") {
+      nodes.push(record["from"], record["to"]);
+    }
+  };
+  visit(result);
+  return { nodes: [...new Set(nodes)], edges: [...new Set(edges)] };
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<StateSnapshot | null>(null);
   const [events, setEvents] = useState<MemoryEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [selection, setSelection] = useState<Selection>(null);
-  const [showInvalidated, setShowInvalidated] = useState(true);
   const [overlays, setOverlays] = useState<Overlays>(EMPTY_OVERLAYS);
   const [filter, setFilter] = useState<{ label: string; ids: Set<string> } | null>(null);
   const [selectedOpId, setSelectedOpId] = useState<string | null>(null);
@@ -89,7 +82,6 @@ export function App() {
     const close = subscribe(
       (event) => {
         setEvents((prev) => [...prev.slice(-599), event]);
-        setOverlays((prev) => reduceOverlays(prev, event));
         if (event.type === "db:changed") {
           if (refetchTimer.current) window.clearTimeout(refetchTimer.current);
           refetchTimer.current = window.setTimeout(() => void refresh(), 120);
@@ -109,38 +101,16 @@ export function App() {
       setError(null);
       try {
         const result = (await runOp(op, args)) as unknown;
-        if (op === "recall" && result && typeof result === "object") {
-          const r = result as {
-            anchors?: { id: string }[];
-            goals?: { id: string }[];
-            path?: { fromId: string; edge: { id: string }; to: { id: string } }[];
-          };
-          const recallEdges = (r.path ?? []).map((s) => s.edge.id);
-          const recallNodes = [
-            ...(r.anchors ?? []).map((n) => n.id),
-            ...(r.goals ?? []).map((n) => n.id),
-            ...(r.path ?? []).flatMap((s) => [s.fromId, s.to.id]),
-          ];
+        const { nodes, edges } = idsFromResult(result, snapshotRef.current);
+        if (nodes.length > 0 || edges.length > 0) {
           setOverlays((prev) => ({
-            ...prev,
-            recallEdges: [...new Set([...prev.recallEdges, ...recallEdges])],
-            recallNodes: [...new Set([...prev.recallNodes, ...recallNodes])],
+            highlightNodes: union(prev.highlightNodes, nodes),
+            highlightEdges: union(prev.highlightEdges, edges),
           }));
-          setFilter({ label: "recall results", ids: new Set(recallNodes) });
-          setSelectedOpId(null);
-        }
-        if (op === "getTopImportance" && Array.isArray(result)) {
-          const ids = (result as { id: string }[]).map((n) => n.id);
-          const q =
-            typeof args["semanticQuery"] === "string" && args["semanticQuery"].trim()
-              ? ` “${args["semanticQuery"].trim().slice(0, 60)}”`
-              : "";
-          setFilter({ label: `top ${String(args["type"] ?? "all")}${q}`, ids: new Set(ids) });
-          setSelectedOpId(null);
-          setOverlays((prev) => ({
-            ...prev,
-            recallNodes: [...new Set([...prev.recallNodes, ...ids])],
-          }));
+          if (nodes.length > 0) {
+            setFilter({ label: `${op} results`, ids: new Set(nodes) });
+            setSelectedOpId(null);
+          }
         }
         await refresh();
       } catch (e) {
@@ -152,21 +122,11 @@ export function App() {
     [refresh]
   );
 
-  const onTick = useCallback(async () => {
-    setBusy(true);
-    try {
-      await tick();
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
   const applyFilter = useCallback((label: string, ids: string[]) => {
     setFilter({ label, ids: new Set(ids) });
     setOverlays((prev) => ({
       ...prev,
-      recallNodes: [...new Set([...prev.recallNodes, ...ids])],
+      highlightNodes: union(prev.highlightNodes, ids),
     }));
   }, []);
 
@@ -199,7 +159,7 @@ export function App() {
     });
   }, []);
 
-  const hasHighlight = overlays.recallNodes.length > 0 || overlays.recallEdges.length > 0;
+  const hasHighlight = overlays.highlightNodes.length > 0 || overlays.highlightEdges.length > 0;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -252,8 +212,6 @@ export function App() {
               selection={selection}
               onSelect={setSelection}
               overlays={overlays}
-              showInvalidated={showInvalidated}
-              onShowInvalidatedChange={setShowInvalidated}
               visibleIds={filter ? filter.ids : null}
             />
           </div>
@@ -314,7 +272,7 @@ export function App() {
               />
               <ScrollArea className="flex-1 px-3 pb-3">
                 <div className="space-y-4">
-                  <Controls selection={selection} onRun={onRun} onTick={onTick} busy={busy} error={null} />
+                  <Controls selection={selection} onRun={onRun} busy={busy} error={null} />
                   <EventLog events={events} />
                 </div>
               </ScrollArea>

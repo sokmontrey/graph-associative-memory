@@ -1,5 +1,5 @@
 // Composition root: wires the memory graph stack (DB + embedder + search +
-// services). This is the wiring entry — not the public library entry
+// service). This is the wiring entry — not the public library entry
 // (src/index.ts) and not the process entry (src/runtime/start.ts).
 import { DB_PATH } from "./db/index.ts";
 import { MEMORY_NODE_LABEL } from "./db/relations.ts";
@@ -9,22 +9,24 @@ import {
   type MemoryNode,
   type MemoryNodePatch,
   type MemoryNodeUpsert,
-} from "./models/memory.ts";
+} from "./models/index.ts";
 import { LadybugEdgeRepo, type EdgeRepo } from "./repos/edges/index.ts";
 import { LadybugGraphDbRepo } from "./repos/graphDb/index.ts";
 import { LadybugNodeRepo, type NodeRepo } from "./repos/node/index.ts";
 import { GemmaEmbedder } from "./services/embeddings/gemmaEmbedder.ts";
 import type { TextEmbedder } from "./services/embeddings/index.ts";
 import { createNodeVectorIndex } from "./services/embeddings/vectorIndex.ts";
-import { GraphMemoryService, MEMORY_EDGE_TABLE_CONFIG } from "./services/graphMemory/graphMemoryService.ts";
-import type { MemorySearchProvider } from "./services/graphMemory/search/index.ts";
-import { VectorMemorySearch } from "./services/graphMemory/search/vectorMemorySearch.ts";
-import { HighlevelMemoryService } from "./services/highlevelMemory/highlevelMemoryService.ts";
-import type { LinkGrounder } from "./services/highlevelMemory/linkGrounder.ts";
+import { ContainsMemorySearch } from "./services/search/containsMemorySearch.ts";
+import type { MemorySearchProvider } from "./services/search/index.ts";
+import { VectorMemorySearch } from "./services/search/vectorMemorySearch.ts";
+import {
+  MEMORY_EDGE_TABLE_CONFIG,
+  MemoryService,
+} from "./services/memory/memoryService.ts";
 import {
   createMemoryEventBus,
   type MemoryEventBus,
-} from "./services/highlevelMemory/events.ts";
+} from "./services/memory/events.ts";
 
 export type MemoryStackOptions = {
   /** Overrides the resolved DB path (MEMORY_DB_PATH / LBUG_DB_PATH). */
@@ -33,8 +35,6 @@ export type MemoryStackOptions = {
   embedder?: TextEmbedder;
   /** Defaults to vector search over the node embeddings. */
   search?: MemorySearchProvider;
-  /** Grounded model for the high-level service; defaults to JevLinkGrounder. */
-  grounder?: LinkGrounder;
   /** Instrumentation sink for the dashboard; defaults to a fresh in-process bus. */
   events?: MemoryEventBus;
   edgeRepo?: EdgeRepo;
@@ -43,8 +43,7 @@ export type MemoryStackOptions = {
 
 export type MemoryStack = {
   db: LadybugGraphDbRepo;
-  service: GraphMemoryService;
-  highlevel: HighlevelMemoryService;
+  service: MemoryService;
   embedder: TextEmbedder;
   search: MemorySearchProvider;
   events: MemoryEventBus;
@@ -72,33 +71,21 @@ export async function createMemoryStack(
       fields: MEMORY_NODE_FIELDS,
       map: mapMemoryNode,
     });
-  const search =
-    options.search ??
-    new VectorMemorySearch(edgeRepo, embedder, await createNodeVectorIndex(db));
+  const nodeIndex = await createNodeVectorIndex(db);
+  const search = options.search ?? new VectorMemorySearch(embedder, nodeIndex);
   const events = options.events ?? createMemoryEventBus();
-  const service = await GraphMemoryService.create({
+  const service = await MemoryService.create({
     db,
     embedder,
     search,
-    nodeRepo,
-    edgeRepo,
-  });
-  const highlevel = await HighlevelMemoryService.create({
-    db,
-    embedder,
-    search,
-    grounder: options.grounder,
+    fallback: new ContainsMemorySearch(db),
     events,
     nodeRepo,
     edgeRepo,
-    // Share the low-level service so MCP ops, dashboard tick, and snapshots all
-    // advance the same DecayClock.
-    memory: service,
   });
   return {
     db,
     service,
-    highlevel,
     embedder,
     search,
     events,

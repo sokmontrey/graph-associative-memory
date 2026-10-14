@@ -19,10 +19,6 @@ export async function runOp(op: OpName, args: Record<string, unknown> = {}): Pro
   return body?.result;
 }
 
-export async function tick(): Promise<void> {
-  await fetch("/api/tick", { method: "POST" });
-}
-
 export function subscribe(
   onEvent: (event: MemoryEvent) => void,
   onStatus?: (connected: boolean) => void

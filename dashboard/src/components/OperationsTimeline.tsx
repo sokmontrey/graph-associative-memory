@@ -58,33 +58,17 @@ export function opNodeIds(op: OpRuntime, snapshot: StateSnapshot | null): string
   };
   for (const step of op.steps) {
     const d = step.detail;
-    for (const key of ["ids", "pairs"]) {
-      const v = d[key];
-      if (Array.isArray(v)) {
-        for (const item of v) {
-          if (typeof item === "string") add(item);
-          else if (Array.isArray(item)) for (const sub of item) add(sub);
-        }
-      }
+    const list = d["ids"];
+    if (Array.isArray(list)) {
+      for (const item of list) add(item);
     }
     add(d["id"]);
     add(d["nodeId"]);
-    add(d["keepId"]);
-    add(d["focusId"]);
     add(d["fromId"]);
+    add(d["from"]);
     add(d["toId"]);
-    add(d["favoredId"]);
-    add(d["supersededBy"]);
+    add(d["to"]);
     addEdgeEnds(d["edgeId"]);
-    const pairs = d["pairs"];
-    if (Array.isArray(pairs)) {
-      for (const p of pairs) {
-        if (p && typeof p === "object") {
-          add((p as Record<string, unknown>)["fromId"]);
-          add((p as Record<string, unknown>)["toId"]);
-        }
-      }
-    }
   }
   return [...ids];
 }
@@ -103,7 +87,7 @@ export function OperationsTimeline({
   const ops = useMemo(() => deriveOps(events), [events]);
   const lookup = useMemo(() => {
     const map = new Map<string, string>();
-    for (const n of snapshot?.nodes ?? []) map.set(n.id, n.description);
+    for (const n of snapshot?.nodes ?? []) map.set(n.id, n.content);
     return map;
   }, [snapshot]);
 
@@ -189,98 +173,30 @@ function summarize(
   lookup?: Map<string, string>
 ): string {
   switch (phase) {
-    case "embed": {
-      const initial = raw(detail["initial"]);
-      const goal = raw(detail["goal"]);
-      const hints = Array.isArray(detail["hints"])
-        ? (detail["hints"] as unknown[]).map((h) => `“${clip(String(h), 80)}”`).join(", ")
-        : "";
-      if (!initial && !goal) return JSON.stringify(detail);
-      const hintCount = Array.isArray(detail["hints"])
-        ? (detail["hints"] as unknown[]).length
-        : typeof detail["hints"] === "number"
-          ? (detail["hints"] as number)
-          : 0;
-      return `initial “${clip(initial || "?", 120)}” → goal “${clip(goal || "?", 120)}”${
-        hints ? `  hints[${hintCount}]: ${hints}` : hintCount ? `  hints: ${hintCount}` : ""
-      }`;
-    }
-    case "search": {
-      const query = raw(detail["query"]);
+    case "relevant": {
       const hits = typeof detail["hits"] === "number" ? detail["hits"] : "?";
       const kept = typeof detail["kept"] === "number" ? `  kept: ${detail["kept"]}` : "";
-      return query ? `“${clip(query, 140)}”  hits: ${hits}${kept}` : JSON.stringify(detail);
+      return `hits: ${hits}${kept}`;
     }
-    case "searchFallback": {
+    case "fallback": {
       const query = raw(detail["query"]);
       const hits = typeof detail["hits"] === "number" ? detail["hits"] : "?";
       return query ? `lexical fallback “${clip(query, 140)}”  hits: ${hits}` : JSON.stringify(detail);
     }
-    case "hop":
-      return `${short(detail["fromId"])} → ${short(detail["toId"])}  score ${num(detail["score"])}${describe(
-        detail["toId"],
-        lookup
-      )}`;
-    case "ground": {
-      const favored = detail["favoredId"] ? `  favored ${short(detail["favoredId"])}` : "";
-      return `${detail["edgeType"]}  ${short(detail["fromId"])} → ${short(detail["toId"])}  conf ${num(
-        detail["confidence"]
-      )}${favored}`;
-    }
-    case "validity":
-      return `${short(detail["id"])}  ${num(detail["from"])} → ${num(detail["to"])}${
-        detail["reason"] ? `  “${detail["reason"]}”` : ""
-      }`;
-    case "invalidated":
-      return `${detail["kind"]} ${short(detail["id"])}  “${detail["reason"]}”${
-        detail["supersededBy"] ? `  superseded by ${short(detail["supersededBy"])}` : ""
-      }`;
-    case "reinstated":
-      return `${detail["kind"]} ${short(detail["id"])}`;
-    case "reinforce":
-      return `keep ${short(detail["keepId"] ?? detail["fromId"] ?? detail["edgeId"])}  ${
-        detail["importance"] !== undefined ? `importance ${num(detail["importance"])}` : ""
-      }`;
-    case "reinforced":
-      return `${short(detail["id"])}  importance ${num(detail["importance"])}`;
-    case "anchors":
-    case "goals": {
-      const query = raw(detail["query"]);
-      const base = ids(detail["ids"], lookup);
-      return query ? `“${clip(query, 140)}”  → ${base}` : base;
-    }
-    case "rank":
-      return ids(detail["ids"], lookup);
-    case "candidates":
-      return `${ids(detail["ids"], lookup)}  pairs ${Array.isArray(detail["pairs"]) ? detail["pairs"].length : 0}`;
+    case "dedup":
+      return `near-duplicate ${short(detail["id"])} — reinforced instead`;
+    case "upsert":
+      return `existing ${short(detail["id"])} — reinforced instead`;
     case "node":
-      return `${short(detail["id"])}  ${detail["type"]}  “${String(detail["description"] ?? "").slice(0, 60)}”`;
-    case "edge":
-      return `${short(detail["edgeId"])}  ${detail["edgeType"]}  ${short(detail["fromId"])} → ${short(
-        detail["toId"]
-      )}`;
-    case "linked":
-      return `${short(detail["edgeId"])}  ${detail["edgeType"]}  ${short(detail["fromId"])} → ${short(
-        detail["toId"]
-      )}`;
+      return `${short(detail["id"])}${detail["kind"] ? `  ${String(detail["kind"])}` : ""}`;
+    case "edge": {
+      const id = short(detail["id"] ?? detail["edgeId"]);
+      const rel = String(detail["relation"] ?? detail["edgeType"] ?? "");
+      return `${id}  ${rel}  ${short(detail["from"] ?? detail["fromId"])} → ${short(detail["to"] ?? detail["toId"])}`;
+    }
     default:
       return JSON.stringify(detail);
   }
-}
-
-function ids(value: unknown, lookup?: Map<string, string>): string {
-  if (!Array.isArray(value)) return "";
-  const parts = value.map((v) => {
-    const id = short(v);
-    if (!lookup || typeof v !== "string") return id;
-    const desc = lookup.get(v);
-    return desc ? `${id} “${clip(desc, 48)}”` : id;
-  });
-  return `${value.length} [${parts.join(", ")}]`;
-}
-
-function num(value: unknown): string {
-  return typeof value === "number" ? value.toFixed(2) : String(value);
 }
 
 function raw(value: unknown): string {
@@ -291,36 +207,16 @@ function clip(text: string, n: number): string {
   return text.length > n ? `${text.slice(0, n - 1)}…` : text;
 }
 
-function describe(id: unknown, lookup?: Map<string, string>): string {
-  if (typeof id !== "string" || !lookup) return "";
-  const desc = lookup.get(id);
-  return desc ? `  “${clip(desc, 60)}”` : "";
-}
-
 function formatArgs(op: string, args: Record<string, unknown>): string {
   switch (op) {
-    case "recall": {
-      const initial = raw(args["initialIdea"]);
-      const goal = raw(args["goalIdea"]);
-      const hints = Array.isArray(args["searchHints"])
-        ? (args["searchHints"] as unknown[]).map((h) => String(h)).filter(Boolean)
-        : [];
-      return `initial “${clip(initial || "?", 140)}” → goal “${clip(goal || "?", 140)}”${
-        hints.length ? `  hints: ${hints.map((h) => `“${clip(h, 60)}”`).join(", ")}` : ""
-      }`;
-    }
-    case "getTopImportance": {
-      const query = raw(args["semanticQuery"]);
-      return `type=${String(args["type"] ?? "?")} n=${String(args["n"] ?? "?")}${
-        query ? `  query “${clip(query, 160)}”` : ""
-      }`;
-    }
-    case "remember":
-      return `type=${String(args["type"] ?? "?")}  “${clip(raw(args["description"]), 180)}”`;
-    case "proposeLinks": {
-      const focus = raw(args["focusId"]);
-      return focus ? `focus ${short(focus)}` : "buffer";
-    }
+    case "search":
+      return `“${clip(raw(args["query"]), 180)}”  n=${String(args["n"] ?? 10)}`;
+    case "recent":
+      return `n=${String(args["n"] ?? 10)}${args["kind"] ? `  kind=${String(args["kind"])}` : ""}`;
+    case "add":
+      return `${String(args["kind"] ?? "?")}  “${clip(raw(args["content"]), 180)}”`;
+    case "link":
+      return `${String(args["relation"] ?? "?")}  ${short(args["from"])} → ${short(args["to"])}`;
     default:
       return clip(JSON.stringify(args), 280);
   }

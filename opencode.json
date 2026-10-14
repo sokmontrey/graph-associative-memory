@@ -9,5 +9,19 @@
       "timeout": 300000
     }
   },
-  "instructions": ["AGENT.md"]
+  "instructions": ["AGENTS.md"],
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "permission": {
+        "associative-memory_*": "deny"
+      }
+    },
+    "plan": {
+      "mode": "primary",
+      "permission": {
+        "associative-memory_*": "deny"
+      }
+    }
+  }
 }

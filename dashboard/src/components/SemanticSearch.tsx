@@ -7,7 +7,7 @@ import { Button } from "./ui/button.tsx";
 
 // Search row designed to live inside the bottom command bar (the parent
 // provides the pill container). Emits matching node ids to filter/highlight
-// the graph via getTopImportance { semanticQuery, n }.
+// the graph via search { query, n }.
 export function SemanticSearch({
   onResults,
   busy,
@@ -26,11 +26,7 @@ export function SemanticSearch({
     setRunning(true);
     setError(null);
     try {
-      const result = (await runOp("getTopImportance", {
-        type: "all",
-        n,
-        semanticQuery: q,
-      })) as WireNode[];
+      const result = (await runOp("search", { query: q, n })) as WireNode[];
       const ids = Array.isArray(result) ? result.map((node) => node.id) : [];
       onResults(`search “${q.length > 60 ? `${q.slice(0, 59)}…` : q}”`, ids);
     } catch (e) {

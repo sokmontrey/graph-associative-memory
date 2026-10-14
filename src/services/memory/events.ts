@@ -1,20 +1,20 @@
-// In-process instrumentation for the high-level memory operations. The service
-// emits an event per meaningful step; the dashboard subscribes and projects
-// them live. Deliberately dependency-free (a listener Set, no Node EventEmitter)
-// so the same types work in the browser bundle.
+// In-process instrumentation for the low-level memory tools. The service
+// emits an event per op; the dashboard subscribes and projects them live.
+// Deliberately dependency-free so the same types work in the browser bundle.
 
 export type MemoryOpKind =
-  | "getTopImportance"
-  | "recall"
-  | "remember"
-  | "proposeLinks"
-  | "connect"
-  | "invalidate"
-  | "reinstate"
-  | "resolveContradiction"
-  | "challenge"
-  | "corroborate"
-  | "reinforce";
+  | "search"
+  | "recent"
+  | "top"
+  | "get"
+  | "edges"
+  | "add"
+  | "update"
+  | "link"
+  | "forget"
+  | "reinforceNodes"
+  | "reinforceEdges"
+  | "tick";
 
 export type MemoryEvent =
   | { type: "op:start"; opId: string; op: MemoryOpKind; at: number; args: Record<string, unknown> }

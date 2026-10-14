@@ -14,7 +14,6 @@
     "@kessler/gemma-embedding": "^1.0.0",
     "@ladybugdb/core": "0.19.1",
     "@modelcontextprotocol/server": "^2.3.1",
-    "@typesafe-ai/sdk": "^0.6.0",
     "zod": "^4.6.5"
   },
   "scripts": {

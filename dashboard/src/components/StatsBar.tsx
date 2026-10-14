@@ -4,6 +4,21 @@ import { Separator } from "./ui/separator.tsx";
 import { cn } from "@/lib/utils";
 import type { StateSnapshot } from "../types.ts";
 
+const DOT_COLORS = [
+  "bg-violet-400",
+  "bg-teal-400",
+  "bg-orange-400",
+  "bg-sky-400",
+  "bg-rose-400",
+  "bg-lime-400",
+];
+
+function dotColor(kind: string): string {
+  let h = 0;
+  for (let i = 0; i < kind.length; i++) h = (h * 31 + kind.charCodeAt(i)) | 0;
+  return DOT_COLORS[Math.abs(h) % DOT_COLORS.length]!;
+}
+
 export function StatsBar({
   snapshot,
   connected,
@@ -14,8 +29,8 @@ export function StatsBar({
   busy?: boolean;
 }) {
   const stats = snapshot?.stats;
-  const typeEntries = stats
-    ? (Object.entries(stats.byNodeType) as [string, number][]).filter(([, n]) => n > 0)
+  const kindEntries = stats?.byKind
+    ? (Object.entries(stats.byKind) as [string, number][]).filter(([, n]) => n > 0)
     : [];
 
   return (
@@ -46,19 +61,13 @@ export function StatsBar({
       <Separator orientation="vertical" className="mx-1 h-6" />
 
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-        <Stat label="memories" value={String(stats?.nodes.total ?? 0)} />
-        <Stat label="links" value={String(stats?.edges.total ?? 0)} />
-        <Stat
-          label="avg rank"
-          value={((stats?.nodes.avgImportance ?? 0) * (stats?.nodes.avgValidity ?? 0)).toFixed(2)}
-        />
-        <Stat label="validity" value={(stats?.nodes.avgValidity ?? 0).toFixed(2)} />
-        {(stats?.nodes.invalidated ?? 0) > 0 && (
-          <Badge variant="destructive">{stats?.nodes.invalidated} invalidated</Badge>
-        )}
-        {typeEntries.map(([t, n]) => (
+        <Stat label="memories" value={String(stats?.nodes ?? 0)} />
+        <Stat label="links" value={String(stats?.edges ?? 0)} />
+        <Stat label="avg importance" value={(stats?.avgImportance ?? 0).toFixed(2)} />
+        <Stat label="avg strength" value={(stats?.avgStrength ?? 0).toFixed(2)} />
+        {kindEntries.map(([t, n]) => (
           <Badge key={t} variant="outline" className="gap-1 normal-case">
-            <Dot type={t} />
+            <span className={cn("h-1.5 w-1.5 rounded-full", dotColor(t))} />
             {t} · {n}
           </Badge>
         ))}
@@ -74,14 +83,4 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="text-muted-foreground">{label}</span>
     </span>
   );
-}
-
-function Dot({ type }: { type: string }) {
-  const color =
-    type === "preference"
-      ? "bg-violet-400"
-      : type === "trait"
-        ? "bg-teal-400"
-        : "bg-orange-400";
-  return <span className={cn("h-1.5 w-1.5 rounded-full", color)} />;
 }

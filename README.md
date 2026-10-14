@@ -2,28 +2,30 @@
 
 # Associative Graph Memory
 
-An experimental long-term **effortful** graph memory system for AI agent harnesses. This was built as part of the French learning system project, which needed a dynamic learner preference/progression tracking system. 
+Long-term graph memory for AI agent harnesses. One node shape, one edge
+shape, free-form labels — meaning lives in the text the memory subagent
+reads, not in rigid enums.
 
-## The core idea
+## Design
 
-- Every memory node has a half-life value that decays over time, indicating how important it is compared to others.
-- High-importance nodes show up regularly in the top query results.
-- Agents are restricted to tools that allow them to only query the immediate nodes that "come to mind".
-- If the agent needs to find any specific details, it will have to do graph walking, which strengthens the edges between nodes.
-- These stronger edges will also show up more regularly than the rest when the agent reads the edges of a node.
-
-## Limitations
-
-This is an **effortful** memory system.
-Agents need to intentionally look for "what's missing", which is a very difficult task at the moment.
-It has to know what it doesn't know. And oftentimes, it never performs this well.
-
-> [!NOTE]
-> Due to this limitation, users will have to guide and instruct the agent to use the memory.
-
-## Next step
-
-A system1 model (Jev by Typesafe) is currently used to propose links between memories as an attempt to reduce the need for the agent to think. But a thin gap identification layer for the agent that automatically searches, consolidates, and injects context directly to the agent should be explored. Before this can become a system1 memory system on its own.
+- **Node**: `content` (one self-contained statement), `kind` (free tag),
+  `importance` (half-life value), `createdAt`.
+- **Edge**: `from`, `to`, `relation` (free label), `description` (WHY linked —
+  the subagent reads this to decide whether to hop), `strength`.
+- **Reads are pure**: `search`, `recent`, `top`, `get`, `edges` (both
+  directions). Reading never changes anything.
+- **Writes**: `add` (server-side dedup at cosine > 0.92), `update`
+  (re-embeds), `link` (upsert on `(from, to, relation)`), `forget`
+  (cascades edges).
+- **Reinforce is the only way values go up** (`reinforceNodes`,
+  `reinforceEdges`), with saturating returns. `tick()` (batch decay) runs on
+  a server-side schedule and is never exposed.
+- **Call only with a reason** (see `AGENTS.md`): the main agent calls the
+  `memory` subagent with MODE: RECALL only when it risks assuming
+  user-specific context it doesn't have, and MODE: COMMIT only when the turn
+  surfaced something durable. Skipping is the default. The low-level
+  MCP tools are subagent-only; the main agent is denied them in
+  `opencode.json`. No hooks, no SDK — instructions only.
 
 ## Installation
 
@@ -34,7 +36,6 @@ enums).
 ```bash
 npm install
 npm --prefix dashboard install
-cp .env.example .env   # then set TYPESAFE_API_KEY (see Env)
 npm run typecheck
 ```
 
@@ -51,10 +52,10 @@ npm run serve           # MCP over stdio + dashboard at http://127.0.0.1:4317
 npm run dashboard:dev   # Vite dev server with HMR, proxying API to :4317
 ```
 
-Open `http://127.0.0.1:4317`. The dashboard shows the graph live (colour =
-type, size = importance, opacity = validity, dashed grey = invalidated),
-every op with its steps/duration, a node/link inspector, and controls to run
-any op (including belief ops and `tick`) without an agent.
+Open `http://127.0.0.1:4317`. The dashboard shows the graph live (size =
+importance), every op with its steps/duration, a node/link inspector, and
+controls to run any op without an agent. Decay needs no schedule: every 20
+tool calls land one decay step automatically.
 
 Single-process ownership: the first `start.ts` to open `MEMORY_DB_PATH`
 owns the embedded DB and serves the dashboard. Any further process (second
@@ -70,43 +71,30 @@ sharing; `MEMORY_MCP=0` / `MEMORY_DASHBOARD=0` disable either half.
 ```ts
 import { createMemoryStack } from "./src/index.ts";
 
-const { service, highlevel, close } = await createMemoryStack();
-await highlevel.remember("observation", "Types on a mechanical keyboard", []);
-const top = await highlevel.getTopImportance("all", 10);
-const path = await highlevel.recall("mechanical keyboard", "late-night work");
+const { service, close } = await createMemoryStack();
+await service.add({ content: "Types on a mechanical keyboard", kind: "fact" });
+const top = await service.top(10);
+const hits = await service.search("mechanical keyboard", 5);
 await close();
 ```
 
-`createMemoryStack({ dbPath, embedder, search, grounder, events, nodeRepo, edgeRepo })`
-wires DB + embedder + vector index + services. Inject fakes to run without
+`createMemoryStack({ dbPath, embedder, search, events, nodeRepo, edgeRepo })`
+wires DB + embedder + vector index + service. Inject fakes to run without
 the model download.
 
 ### 3. Connect an agent (MCP host)
 
-Generic stdio wiring:
-
-```json
-{
-    "mcpServers": {
-        "associative-memory": {
-            "command": "node",
-            "args": [
-                "/absolute/path/to/associative-graph-memory/src/runtime/start.ts"
-            ],
-            "env": { "TYPESAFE_API_KEY": "..." }
-        }
-    }
-}
-```
-
 **OpenCode:** this repo ships `opencode.json`, so opening OpenCode here
-registers the server automatically and loads `AGENT.md` as instructions.
+registers the server automatically, loads `AGENTS.md` as instructions, and
+registers the `memory` subagent (`.opencode/agents/memory.md`). Main agents
+are denied the `associative-memory_*` tools; only `memory` may call them.
 
-Agent loop (see `AGENT.md` + `memory://agent-guide`):
+Agent loop:
 
-1. `memory_get_top_importance` before answering (what do I believe?).
-2. `memory_remember` + `memory_propose_links` → `memory_connect`.
-3. `memory_recall` to explain how two ideas connect.
-4. On conflict: `memory_resolve_contradiction(keepId, dropId, rationale)`;
-   on doubt: `memory_challenge`; on support: `memory_corroborate`.
-5. `memory_invalidate` to retire, `memory_reinstate` to undo.
+1. RECALL when at risk of guessing user context: `memory` subagent searches
+   (`search`/`recent`/`top`), follows `edges()` one hop, returns a BRIEFING
+   (or "nothing relevant").
+2. Main agent does the work; briefing is background, user wins conflicts.
+3. COMMIT when the turn surfaced durable facts: subagent stores them
+   (`add`/`update`/`forget`), `link`s them, and
+   `reinforceNodes`/`reinforceEdges` what was used.

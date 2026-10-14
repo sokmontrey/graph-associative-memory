@@ -2,33 +2,24 @@
 // these; keep them in sync). Everything is JSON-serializable — dates are ISO
 // strings — so the same shapes cross the HTTP boundary and the SSE stream.
 
-export type WireStatus = "active" | "invalidated";
-
 export interface WireNode {
   id: string;
-  type: "preference" | "trait" | "observation";
-  description: string;
+  content: string;
+  kind: string;
   importance: number;
-  validity: number;
-  status: WireStatus;
-  rank: number;
-  lastReinforce: string;
-  invalidatedAt: string | null;
-  invalidateReason: string | null;
-  supersededBy: string | null;
+  createdAt: string;
+  lastReinforcedAt: string;
 }
 
 export interface WireEdge {
   id: string;
   from: string;
   to: string;
-  type: "supports" | "contradicts" | "related_to" | "evokes";
+  relation: string;
   description: string;
   strength: number;
-  status: WireStatus;
-  lastReinforce: string;
-  invalidatedAt: string | null;
-  invalidateReason: string | null;
+  createdAt: string;
+  lastReinforcedAt: string;
 }
 
 export interface StateSnapshot {
@@ -36,42 +27,30 @@ export interface StateSnapshot {
   nodes: WireNode[];
   edges: WireEdge[];
   stats: {
-    nodes: {
-      total: number;
-      active: number;
-      invalidated: number;
-      avgImportance: number;
-      avgValidity: number;
-    };
-    edges: {
-      total: number;
-      active: number;
-      invalidated: number;
-      avgStrength: number;
-    };
-    byNodeType: Record<"preference" | "trait" | "observation", number>;
-    byEdgeType: Record<"supports" | "contradicts" | "related_to" | "evokes", number>;
+    nodes: number;
+    edges: number;
+    avgImportance: number;
+    avgStrength: number;
+    byKind: Record<string, number>;
   };
 }
 
-// UI-triggerable operations (also what an agent would do, minus the MCP layer).
-// `inspect` / `stats` / `setValidity` exist so remote MCP clients can proxy the
-// full HighlevelMemoryService contract through /api/op.
+// UI-triggerable operations (the low-level MemoryTools, minus tick which is
+// server-schedule only). `stats` exists so remote MCP clients can proxy the
+// full contract through /api/op.
 export type OpName =
-  | "getTopImportance"
-  | "recall"
-  | "remember"
-  | "proposeLinks"
-  | "connect"
-  | "reinforce"
-  | "challenge"
-  | "corroborate"
-  | "invalidate"
-  | "reinstate"
-  | "resolveContradiction"
-  | "inspect"
-  | "stats"
-  | "setValidity";
+  | "search"
+  | "recent"
+  | "top"
+  | "get"
+  | "edges"
+  | "add"
+  | "update"
+  | "link"
+  | "forget"
+  | "reinforceNodes"
+  | "reinforceEdges"
+  | "stats";
 
 export interface OpRequest {
   op: OpName;

@@ -4,7 +4,6 @@ import type { OpName, StateSnapshot, WireEdge, WireNode } from "../types.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Separator } from "./ui/separator.tsx";
-import { cn } from "@/lib/utils";
 
 export type Selection = { kind: "node" | "edge"; id: string } | null;
 
@@ -58,7 +57,7 @@ export function Inspector({
           busy={busy}
         />
       ) : (
-        <EdgeInspector snapshot={snapshot} edgeId={selection.id} onSelect={onSelect} />
+        <EdgeInspector snapshot={snapshot} edgeId={selection.id} onSelect={onSelect} onRun={onRun} busy={busy} />
       )}
     </div>
   );
@@ -84,52 +83,36 @@ function NodeInspector({
     return <div className="rounded-lg border border-border px-3 py-4 text-xs text-muted-foreground">Not found.</div>;
   const prevNode = prev?.nodes.find((n) => n.id === nodeId);
   const incident = snapshot.edges.filter((e) => e.from === node.id || e.to === node.id);
-  const descById = new Map(snapshot.nodes.map((n) => [n.id, n.description]));
+  const contentById = new Map(snapshot.nodes.map((n) => [n.id, n.content]));
 
   return (
     <div className="rounded-lg border border-border bg-background/60">
       <div className="space-y-2.5 p-3">
-        <p className="text-[13px] leading-snug">{node.description}</p>
+        <p className="text-[13px] leading-snug">{node.content}</p>
         <div className="flex flex-wrap gap-1.5">
-          <TypeBadge type={node.type} />
-          <StatusBadge status={node.status} />
+          <Badge variant="outline">{node.kind}</Badge>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <Metric label="importance" value={`${node.importance.toFixed(3)}${delta(node.importance, prevNode?.importance)}`} />
-          <Metric label="validity" value={`${node.validity.toFixed(3)}${delta(node.validity, prevNode?.validity)}`} />
-          <Metric label="rank" value={`${node.rank.toFixed(3)}${delta(node.rank, prevNode?.rank)}`} />
+          <Metric label="links" value={String(incident.length)} />
         </div>
         <KV k="id" v={<span className="font-mono text-[11px]">{node.id}</span>} />
-        <KV k="reinforced" v={date(node.lastReinforce)} />
-        {node.invalidatedAt && <KV k="invalidated" v={date(node.invalidatedAt)} />}
-        {node.invalidateReason && <KV k="reason" v={node.invalidateReason} />}
-        {node.supersededBy && (
-          <KV
-            k="superseded by"
-            v={
-              <button
-                type="button"
-                className="font-mono text-[11px] text-sky-500 hover:underline cursor-pointer"
-                onClick={() => onSelect({ kind: "node", id: node.supersededBy! })}
-              >
-                {node.supersededBy.slice(0, 8)}
-              </button>
-            }
-          />
-        )}
+        <KV k="created" v={date(node.createdAt)} />
+        <KV k="reinforced" v={date(node.lastReinforcedAt)} />
       </div>
 
       <Separator />
 
       <div className="space-y-1.5 p-3">
         <div className="text-[11px] font-medium text-muted-foreground">
-          Neighbors ({incident.length})
+          Edges ({incident.length})
         </div>
         {incident.length === 0 && <p className="text-xs text-muted-foreground">No links.</p>}
         <div className="max-h-44 space-y-1 overflow-y-auto nice-scroll">
           {incident.slice(0, 20).map((e) => {
             const peerId = e.from === node.id ? e.to : e.from;
-            const peer = descById.get(peerId) ?? "";
+            const dir = e.from === node.id ? "→" : "←";
+            const peer = contentById.get(peerId) ?? "";
             return (
               <div key={e.id} className="flex items-center gap-1.5 text-[11px]">
                 <button
@@ -138,9 +121,9 @@ function NodeInspector({
                   title={e.description}
                   onClick={() => onSelect({ kind: "edge", id: e.id })}
                 >
-                  {e.type}
+                  {e.relation}
                 </button>
-                <span className="text-muted-foreground">→</span>
+                <span className="text-muted-foreground">{dir}</span>
                 <button
                   type="button"
                   className="truncate text-left hover:underline cursor-pointer"
@@ -159,19 +142,16 @@ function NodeInspector({
       <Separator />
 
       <div className="flex flex-wrap gap-1.5 p-3">
-        <Button size="sm" variant="secondary" disabled={busy} onClick={() => onRun("reinforce", { memoryId: node.id })}>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => onRun("reinforceNodes", { ids: [node.id] })}>
           Reinforce
         </Button>
         <Button
           size="sm"
-          variant="outline"
+          variant="destructive"
           disabled={busy}
-          onClick={() => onRun("challenge", { memoryId: node.id, reason: "dashboard: manual doubt" })}
+          onClick={() => onRun("forget", { ids: [node.id] })}
         >
-          Challenge
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => onRun("corroborate", { memoryId: node.id })}>
-          Corroborate
+          Forget
         </Button>
       </div>
     </div>
@@ -182,17 +162,21 @@ function EdgeInspector({
   snapshot,
   edgeId,
   onSelect,
+  onRun,
+  busy,
 }: {
   snapshot: StateSnapshot;
   edgeId: string;
   onSelect: (s: Selection) => void;
+  onRun: (op: OpName, args: Record<string, unknown>) => void;
+  busy: boolean;
 }) {
   const edge = snapshot.edges.find((e) => e.id === edgeId);
   if (!edge)
     return <div className="rounded-lg border border-border px-3 py-4 text-xs text-muted-foreground">Not found.</div>;
   return (
     <div className="space-y-2.5 rounded-lg border border-border bg-background/60 p-3">
-      <EdgeBadge type={edge.type} />
+      <Badge variant="info">{edge.relation}</Badge>
       <p className="text-[13px] leading-snug">{edge.description}</p>
       <div className="flex items-center gap-1.5 text-xs">
         <NodeLink id={edge.from} onSelect={onSelect} />
@@ -200,10 +184,14 @@ function EdgeInspector({
         <NodeLink id={edge.to} onSelect={onSelect} />
       </div>
       <KV k="strength" v={edge.strength.toFixed(3)} />
-      <KV k="status" v={<StatusBadge status={edge.status} />} />
       <KV k="id" v={<span className="font-mono text-[11px]">{edge.id}</span>} />
-      <KV k="reinforced" v={date(edge.lastReinforce)} />
-      {edge.invalidateReason && <KV k="reason" v={edge.invalidateReason} />}
+      <KV k="created" v={date(edge.createdAt)} />
+      <KV k="reinforced" v={date(edge.lastReinforcedAt)} />
+      <div className="flex flex-wrap gap-1.5">
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => onRun("reinforceEdges", { ids: [edge.id] })}>
+          Reinforce
+        </Button>
+      </div>
     </div>
   );
 }
@@ -238,23 +226,12 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function TypeBadge({ type }: { type: WireNode["type"] }) {
-  const variant = type === "preference" ? "violet" : type === "trait" ? "teal" : "orange";
-  return <Badge variant={variant}>{type}</Badge>;
+export function KindBadge({ kind }: { kind: WireNode["kind"] }) {
+  return <Badge variant="outline">{kind}</Badge>;
 }
 
-export function StatusBadge({ status }: { status: WireNode["status"] | WireEdge["status"] }) {
-  return (
-    <Badge variant={status === "active" ? "success" : "outline"} className={cn(status !== "active" && "text-muted-foreground")}>
-      {status}
-    </Badge>
-  );
-}
-
-export function EdgeBadge({ type }: { type: WireEdge["type"] }) {
-  const variant =
-    type === "supports" ? "success" : type === "contradicts" ? "destructive" : type === "related_to" ? "info" : "warning";
-  return <Badge variant={variant}>{type}</Badge>;
+export function RelationBadge({ relation }: { relation: WireEdge["relation"] }) {
+  return <Badge variant="info">{relation}</Badge>;
 }
 
 function date(iso: string): string {

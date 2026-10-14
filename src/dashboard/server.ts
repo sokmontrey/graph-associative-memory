@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryStack } from "../stack.ts";
-import type { MemoryEvent } from "../services/highlevelMemory/events.ts";
+import type { MemoryEvent } from "../services/memory/events.ts";
 import { buildSnapshot } from "./state.ts";
 import type { OpRequest } from "./protocol.ts";
 
@@ -48,67 +48,55 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 }
 
 function dispatch(stack: MemoryStack, req: OpRequest): Promise<unknown> {
-  const { highlevel } = stack;
+  const { service } = stack;
   const args = req.args ?? {};
   switch (req.op) {
-    case "getTopImportance":
-      return highlevel.getTopImportance(
-        args["type"] as never,
-        Number(args["n"]),
-        args["semanticQuery"] as string | undefined
-      );
-    case "recall":
-      return highlevel.recall(
-        String(args["initialIdea"]),
-        String(args["goalIdea"]),
-        (args["searchHints"] as string[] | undefined) ?? []
-      );
-    case "remember":
-      return highlevel.remember(
-        args["type"] as never,
-        String(args["description"]),
-        (args["links"] as never[]) ?? []
-      );
-    case "proposeLinks":
-      return highlevel.proposeLinks({
-        focusId: args["focusId"] as string | undefined,
-        limit: args["limit"] as number | undefined,
+    case "search":
+      return service.search(String(args["query"]), args["n"] as number | undefined);
+    case "recent":
+      return service.recent(args["n"] as number | undefined, args["kind"] as string | undefined);
+    case "top":
+      return service.top(args["n"] as number | undefined);
+    case "get":
+      return service.get((args["ids"] as string[] | undefined) ?? []);
+    case "edges":
+      return service.edges(String(args["nodeId"]), {
+        relation: args["relation"] as string | undefined,
+        query: args["query"] as string | undefined,
+        n: args["n"] as number | undefined,
       });
-    case "connect":
-      return highlevel.connect(args as never);
-    case "reinforce":
-      return highlevel.reinforce(String(args["memoryId"]), args["strength"] as number | undefined);
-    case "challenge":
-      return highlevel.challenge(String(args["memoryId"]), String(args["reason"]));
-    case "corroborate":
-      return highlevel.corroborate(
-        String(args["memoryId"]),
-        args["reason"] as string | undefined
-      );
-    case "invalidate":
-      return highlevel.invalidate(
-        args["target"] as never,
-        String(args["reason"]),
-        args["supersededBy"] as string | undefined
-      );
-    case "reinstate":
-      return highlevel.reinstate(args["target"] as never, args["reason"] as string | undefined);
-    case "resolveContradiction":
-      return highlevel.resolveContradiction(
-        String(args["keepId"]),
-        String(args["dropId"]),
-        String(args["rationale"]),
-        args["evidence"] as Record<string, number> | undefined
-      );
-    case "inspect":
-      return highlevel.inspect(String(args["memoryId"] ?? args["id"]));
+    case "add":
+      return service.add({ content: String(args["content"]), kind: String(args["kind"]) });
+    case "update":
+      return service.update(String(args["id"]), {
+        content: args["content"] as string | undefined,
+        kind: args["kind"] as string | undefined,
+      });
+    case "link":
+      return service.link({
+        from: String(args["from"]),
+        to: String(args["to"]),
+        relation: String(args["relation"]),
+        description: String(args["description"]),
+      });
+    case "forget":
+      return service.forget((args["ids"] as string[] | undefined) ?? []).then(() => ({ ok: true }));
+    case "reinforceNodes":
+      return service
+        .reinforceNodes(
+          (args["ids"] as string[] | undefined) ?? [],
+          args["amount"] as number | undefined
+        )
+        .then(() => ({ ok: true }));
+    case "reinforceEdges":
+      return service
+        .reinforceEdges(
+          (args["ids"] as string[] | undefined) ?? [],
+          args["amount"] as number | undefined
+        )
+        .then(() => ({ ok: true }));
     case "stats":
-      return highlevel.stats();
-    case "setValidity":
-      return highlevel.setValidity(
-        String(args["memoryId"]),
-        Number(args["validity"])
-      );
+      return service.stats();
     default:
       return Promise.reject(new Error(`unknown op ${JSON.stringify(req.op)}`));
   }
@@ -169,11 +157,6 @@ export async function createDashboardServer(
       const body = JSON.parse((await readBody(req)) || "{}") as OpRequest;
       const result = await dispatch(stack, body);
       return sendJson(res, 200, { ok: true, op: body.op, result });
-    }
-
-    if (path === "/api/tick" && req.method === "POST") {
-      await stack.service.tick();
-      return sendJson(res, 200, { ok: true });
     }
 
     if (path === "/healthz") {

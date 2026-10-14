@@ -11,12 +11,11 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-import { Eye, EyeOff, Maximize, Minus, Plus, RotateCcw, Settings2 } from "lucide-react";
-import type { EdgeType, NodeType, StateSnapshot, WireEdge, WireNode } from "../types.ts";
+import { Maximize, Minus, Plus, RotateCcw, Settings2 } from "lucide-react";
+import type { StateSnapshot, WireEdge, WireNode } from "../types.ts";
 import type { Selection } from "./Inspector.tsx";
 import { Button } from "./ui/button.tsx";
 import { Badge } from "./ui/badge.tsx";
-import { Switch } from "./ui/switch.tsx";
 import { cn } from "@/lib/utils";
 
 interface SimNode extends SimulationNodeDatum {
@@ -37,24 +36,36 @@ const H = 620;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 
-const NODE_COLOR: Record<NodeType, string> = {
-  preference: "var(--graph-preference)",
-  trait: "var(--graph-trait)",
-  observation: "var(--graph-observation)",
-};
+// Free-form labels get stable colors from a small palette (hash of the label).
+const NODE_PALETTE = [
+  "var(--graph-preference)",
+  "var(--graph-trait)",
+  "var(--graph-observation)",
+];
+const EDGE_PALETTE = [
+  "var(--graph-supports)",
+  "var(--graph-contradicts)",
+  "var(--graph-related)",
+  "var(--graph-evokes)",
+];
 
-const EDGE_COLOR: Record<EdgeType, string> = {
-  supports: "var(--graph-supports)",
-  contradicts: "var(--graph-contradicts)",
-  related_to: "var(--graph-related)",
-  evokes: "var(--graph-evokes)",
-};
+function hashLabel(label: string): number {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function nodeColor(kind: string): string {
+  return NODE_PALETTE[hashLabel(kind) % NODE_PALETTE.length]!;
+}
+
+function edgeColor(relation: string): string {
+  return EDGE_PALETTE[hashLabel(relation) % EDGE_PALETTE.length]!;
+}
 
 export interface Overlays {
-  recallEdges: string[];
-  recallNodes: string[];
-  proposalPairs: string[];
-  favored: string | null;
+  highlightNodes: string[];
+  highlightEdges: string[];
 }
 
 interface Physics {
@@ -85,16 +96,12 @@ export function GraphView({
   selection,
   onSelect,
   overlays,
-  showInvalidated,
-  onShowInvalidatedChange,
   visibleIds,
 }: {
   snapshot: StateSnapshot | null;
   selection: Selection;
   onSelect: (selection: Selection) => void;
   overlays: Overlays;
-  showInvalidated: boolean;
-  onShowInvalidatedChange: (v: boolean) => void;
   /** When set, only these node ids are rendered (filtered op/search view). */
   visibleIds: Set<string> | null;
 }) {
@@ -126,8 +133,7 @@ export function GraphView({
   useEffect(() => {
     if (!snapshot) return;
     const byId = nodesRef.current;
-    const baseNodes = snapshot.nodes.filter((n) => showInvalidated || n.status === "active");
-    const visibleNodes = visibleIds ? baseNodes.filter((n) => visibleIds.has(n.id)) : baseNodes;
+    const visibleNodes = visibleIds ? snapshot.nodes.filter((n) => visibleIds.has(n.id)) : snapshot.nodes;
     const visibleIdsSet = new Set(visibleNodes.map((n) => n.id));
 
     const simNodes = visibleNodes.map((n) => {
@@ -150,12 +156,7 @@ export function GraphView({
     for (const id of [...byId.keys()]) if (!visibleIdsSet.has(id)) byId.delete(id);
 
     const simLinks: SimLink[] = snapshot.edges
-      .filter(
-        (e) =>
-          (showInvalidated || e.status === "active") &&
-          visibleIdsSet.has(e.from) &&
-          visibleIdsSet.has(e.to)
-      )
+      .filter((e) => visibleIdsSet.has(e.from) && visibleIdsSet.has(e.to))
       .map((e) => {
         const prev = linksRef.current.find((l) => l.id === e.id);
         if (prev && prev.edge.from === e.from && prev.edge.to === e.to) {
@@ -213,7 +214,7 @@ export function GraphView({
       sim.force("collide", collide());
       sim.alpha(0.6).restart();
     }
-  }, [snapshot, showInvalidated, visibleIds, physics]);
+  }, [snapshot, visibleIds, physics]);
 
   useEffect(() => () => void simRef.current?.stop(), []);
 
@@ -354,9 +355,8 @@ export function GraphView({
     if (!drag.moved) onSelect({ kind: "node", id: sim.id });
   };
 
-  const recallEdges = new Set(overlays.recallEdges);
-  const recallNodes = new Set(overlays.recallNodes);
-  const proposalPairs = new Set(overlays.proposalPairs);
+  const highlightEdges = new Set(overlays.highlightEdges);
+  const highlightNodes = new Set(overlays.highlightNodes);
   const nodes = [...nodesRef.current.values()];
 
   return (
@@ -383,29 +383,9 @@ export function GraphView({
           onPointerCancel={endBackgroundPan}
         />
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-          {proposalPairs.size > 0 &&
-            nodes.map((a) =>
-              nodes
-                .filter((b) => b.id !== a.id && proposalPairs.has(pairKey(a.id, b.id)))
-                .map((b) => (
-                  <line
-                    key={`p-${a.id}-${b.id}`}
-                    x1={a.x}
-                    y1={a.y}
-                    x2={b.x}
-                    y2={b.y}
-                    stroke="#7cc4ff"
-                    strokeWidth={1.5 / view.k}
-                    strokeDasharray="5 4"
-                    opacity={0.8}
-                    pointerEvents="none"
-                  />
-                ))
-            )}
           {linksRef.current.map((link) => {
             const [sx, sy, tx, ty] = endpoints(link);
-            const active = recallEdges.has(link.id);
-            const invalid = link.edge.status === "invalidated";
+            const active = highlightEdges.has(link.id);
             const selected = selection?.kind === "edge" && selection.id === link.id;
             return (
               <g key={link.id}>
@@ -419,17 +399,16 @@ export function GraphView({
                   onClick={() => onSelect({ kind: "edge", id: link.id })}
                   style={{ cursor: "pointer" }}
                 >
-                  <title>{`${link.edge.type}: ${link.edge.description}`}</title>
+                  <title>{`${link.edge.relation}: ${link.edge.description}`}</title>
                 </line>
                 <line
                   x1={sx}
                   y1={sy}
                   x2={tx}
                   y2={ty}
-                  stroke={selected ? "#ffffff" : active ? "#ffd166" : EDGE_COLOR[link.edge.type]}
+                  stroke={selected ? "#ffffff" : active ? "#ffd166" : edgeColor(link.edge.relation)}
                   strokeWidth={(selected ? 3 : active ? 3 : 0.75 + link.edge.strength * 1.5) / Math.sqrt(view.k)}
-                  strokeDasharray={invalid ? "4 4" : undefined}
-                  opacity={invalid ? 0.35 : active ? 1 : 0.75}
+                  opacity={active ? 1 : 0.75}
                   pointerEvents="none"
                 />
               </g>
@@ -437,10 +416,9 @@ export function GraphView({
           })}
           {nodes.map((sim) => {
             const n = sim.node;
-            const invalid = n.status === "invalidated";
             const selected = selection?.kind === "node" && selection.id === n.id;
-            const recall = recallNodes.has(n.id);
-            const favored = overlays.favored === n.id;
+            const highlighted = highlightNodes.has(n.id);
+            const color = nodeColor(n.kind);
             return (
               <g
                 key={n.id}
@@ -455,13 +433,12 @@ export function GraphView({
                   cx={sim.x}
                   cy={sim.y}
                   r={sim.r}
-                  fill={invalid ? "var(--graph-invalid)" : NODE_COLOR[n.type]}
-                  fillOpacity={invalid ? 0.4 : 0.35 + n.validity * 0.65}
-                  stroke={selected ? "#ffffff" : favored ? "#ffd166" : invalid ? "var(--graph-invalid)" : NODE_COLOR[n.type]}
-                  strokeWidth={(selected || favored ? 3 : recall ? 2.5 : 1) / Math.sqrt(view.k)}
-                  strokeDasharray={invalid ? "3 3" : undefined}
+                  fill={color}
+                  fillOpacity={0.9}
+                  stroke={selected ? "#ffffff" : highlighted ? "#ffd166" : color}
+                  strokeWidth={(selected || highlighted ? 3 : 1) / Math.sqrt(view.k)}
                 >
-                  <title>{`${n.type} · ${n.description}\nimportance ${n.importance.toFixed(2)} · validity ${n.validity.toFixed(2)} · ${n.status}`}</title>
+                  <title>{`${n.kind} · ${n.content}\nimportance ${n.importance.toFixed(2)}`}</title>
                 </circle>
                 <text
                   className="node-label"
@@ -470,7 +447,7 @@ export function GraphView({
                   textAnchor="middle"
                   fontSize={9 / Math.sqrt(view.k)}
                 >
-                  {truncate(n.description, 26)}
+                  {truncate(n.content, 26)}
                 </text>
               </g>
             );
@@ -532,16 +509,6 @@ export function GraphView({
           </div>
           <div className="space-y-2.5">
             <div>
-              <div className="mb-1 text-[11px] font-medium text-muted-foreground">View</div>
-              <label className="flex cursor-pointer items-center gap-2 text-[11px]">
-                <Switch checked={showInvalidated} onCheckedChange={onShowInvalidatedChange} />
-                <span className="inline-flex items-center gap-1 text-muted-foreground">
-                  {showInvalidated ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                  Show invalidated
-                </span>
-              </label>
-            </div>
-            <div>
               <div className="mb-1 text-[11px] font-medium text-muted-foreground">Loners (no links)</div>
               <div className="space-y-1.5">
                 <PhysSlider label="Cluster pull" value={physics.isoGravity} min={0} max={1} step={0.01}
@@ -570,10 +537,7 @@ export function GraphView({
       {/* bottom-left legend */}
       <div className="pointer-events-none absolute bottom-3 left-3 hidden items-center gap-1.5 rounded-lg border border-border bg-background/90 px-2.5 py-1.5 shadow-sm backdrop-blur sm:flex">
         <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-          <span className="inline-block h-0.5 w-4 rounded bg-amber-300" /> recall
-        </span>
-        <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-          <span className="inline-block h-0 w-4 border-t-2 border-dashed border-sky-300" /> proposal
+          <span className="inline-block h-0.5 w-4 rounded bg-amber-300" /> op highlight
         </span>
       </div>
 
@@ -597,10 +561,6 @@ function clamp(v: number, min: number, max: number): number {
 
 function radius(node: WireNode): number {
   return 7 + node.importance * 16;
-}
-
-function pairKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 function endpoints(link: SimLink): [number, number, number, number] {
@@ -655,6 +615,3 @@ function PhysSlider({
     </label>
   );
 }
-
-export { pairKey };
-export type { EdgeType };

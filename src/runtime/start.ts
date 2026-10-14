@@ -3,8 +3,8 @@ import { DB_PATH } from "../db/index.ts";
 import { createMemoryStack } from "../stack.ts";
 import { createDashboardServer, type DashboardServer } from "../dashboard/server.ts";
 import { createMemoryMcpServer } from "../mcp/server.ts";
-import { NOOP_MEMORY_EVENTS } from "../services/highlevelMemory/events.ts";
-import { probeOwner, RemoteHighlevelMemoryService } from "./remoteHighlevel.ts";
+import type { MemoryTools } from "../models/memory-graph.ts";
+import { probeOwner, RemoteMemoryService } from "./remoteMemory.ts";
 
 // Process entry: one process owns the embedded (single-process) database,
 // serving MCP over stdio and the dashboard over HTTP/SSE together. Any
@@ -25,7 +25,7 @@ type OwnedResources = {
 
 type RemoteResources = {
   mode: "remote";
-  highlevel: RemoteHighlevelMemoryService;
+  service: MemoryTools;
 };
 
 let owned: OwnedResources | null = null;
@@ -47,7 +47,7 @@ async function boot(): Promise<OwnedResources | RemoteResources | null> {
         `[memory] database is owned by another instance — ` +
           `serving MCP as a remote client of ${ownerBaseUrl} (no local DB handle)`
       );
-      return { mode: "remote", highlevel: new RemoteHighlevelMemoryService({ baseUrl: ownerBaseUrl }) };
+      return { mode: "remote", service: new RemoteMemoryService({ baseUrl: ownerBaseUrl }) };
     }
     console.error(
       "[memory] no owner dashboard answered at " +
@@ -66,15 +66,8 @@ async function boot(): Promise<OwnedResources | RemoteResources | null> {
 const resources = await boot();
 if (resources?.mode === "owner") {
   owned = resources;
-  // memory_propose_links is the only op needing credentials; warn once instead
-  // of failing late with a bare missing-key error (todo b5af1b54). Remote
-  // mode needs no key — the owner grounds.
-  if (!process.env["TYPESAFE_API_KEY"]) {
-    console.error(
-      "[memory] TYPESAFE_API_KEY is not set — memory_propose_links will fail; " +
-        "set it in .env (repo root, see .env.example) or the host environment."
-    );
-  }
+  // No schedule, no cron: decay is driven purely by traffic — every
+  // OPS_PER_TICK tool calls land one decay step inside the service.
   if (enableDashboard) {
     try {
       owned.dashboard = await createDashboardServer({ stack: owned.stack, port });
@@ -99,36 +92,14 @@ let mcpHandle: { close(): Promise<void> } | null = null;
 if (enableMcp) {
   if (owned) {
     const { stack } = owned;
-    mcpHandle = serveStdio(() =>
-      createMemoryMcpServer({
-        highlevel: stack.highlevel,
-        service: stack.service,
-        events: stack.events,
-      })
-    );
+    mcpHandle = serveStdio(() => createMemoryMcpServer({ service: stack.service }));
     console.error("[memory] mcp: stdio (owner)");
   } else if (remote) {
-    // createMemoryMcpServer only uses `highlevel` today (`service`/`events`
-    // are accepted but unused), so a remote highlevel is sufficient. Pass a
-    // dummy service that throws if a future tool path ever needs it.
-    const { highlevel } = remote;
-    const remoteUrl = ownerBaseUrl;
-    mcpHandle = serveStdio(() =>
-      createMemoryMcpServer({
-        highlevel,
-        service: new Proxy(
-          {},
-          {
-            get: () => () => {
-              throw new Error(
-                `remote MCP client has no local DB handle (owner: ${remoteUrl})`
-              );
-            },
-          }
-        ) as never,
-        events: NOOP_MEMORY_EVENTS,
-      })
-    );
+    // Remote mode holds no DB handle: the owner does the embedding and decay.
+    // createMemoryMcpServer only needs the MemoryTools surface, so a remote
+    // service is sufficient. tick() is owner-only by design.
+    const { service } = remote;
+    mcpHandle = serveStdio(() => createMemoryMcpServer({ service }));
     console.error("[memory] mcp: stdio (remote)");
   }
 }
