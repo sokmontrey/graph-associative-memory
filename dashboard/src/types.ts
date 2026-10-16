@@ -68,3 +68,15 @@ export type OpName =
   | "reinforceNodes"
   | "reinforceEdges"
   | "stats";
+
+// Mirrors src/dashboard/protocol.ts ScratchListItem/ScratchFile.
+// Session scratchpads: agent-owned working state, view-only in the dashboard.
+export interface ScratchListItem {
+  name: string;
+  mtime: number;
+  lines: number;
+}
+
+export interface ScratchFile extends ScratchListItem {
+  content: string;
+}

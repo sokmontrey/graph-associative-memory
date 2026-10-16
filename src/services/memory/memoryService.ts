@@ -118,8 +118,8 @@ export class MemoryService implements MemoryTools {
 
   // ---- READ: pure, no side effects ----
 
-  async search(query: string, n = 10): Promise<MemoryNode[]> {
-    return this.instrument("search", { query, n }, async (emit) => {
+  async search(query: string, n = 10, kind?: string): Promise<MemoryNode[]> {
+    return this.instrument("search", { query, n, kind: kind ?? null }, async (emit) => {
       assertCount(n, "n");
       if (n === 0 || query.trim().length === 0) return [];
       let hits = await this.searchProvider.searchNodes(query, n * SEARCH_OVERSAMPLE);
@@ -135,10 +135,11 @@ export class MemoryService implements MemoryTools {
       const found = await this.nodeRepo.findAll({ where: { id: relevant.map((hit) => hit.id) } });
       const byId = new Map(found.map((node) => [node.id, node]));
       const alpha = MEMORY_POLICY.IMPORTANCE_ALPHA;
+      const wanted = kind?.trim();
       return relevant
         .map((hit) => ({ hit, node: byId.get(hit.id) }))
         .filter((entry): entry is { hit: (typeof relevant)[number]; node: MemoryNode } =>
-          entry.node !== undefined
+          entry.node !== undefined && (wanted === undefined || wanted.length === 0 || entry.node.kind === wanted)
         )
         .map(({ hit, node }) => ({ node, score: hit.score * Math.pow(node.importance, alpha) }))
         .sort((a, b) => b.score - a.score)
@@ -400,9 +401,14 @@ export class MemoryService implements MemoryTools {
   // --- internals -----------------------------------------------------------
 
   private async applyDecay(): Promise<void> {
-    await this.db.query(`MATCH (n:${MEMORY_NODE_LABEL}) SET n.importance = n.importance * $f;`, {
-      f: MEMORY_POLICY.TICK_NODE_FACTOR,
-    });
+    const pinned = [...MEMORY_POLICY.PINNED_KINDS];
+    await this.db.query(
+      `MATCH (n:${MEMORY_NODE_LABEL}) WHERE NOT (n.kind IN $pinned) SET n.importance = n.importance * $f;`,
+      {
+        f: MEMORY_POLICY.TICK_NODE_FACTOR,
+        pinned,
+      }
+    );
     // Directed pattern: the undirected ()-[e]-() form trips a storage
     // assertion in the engine on bulk SET.
     await this.db.query(`MATCH ()-[e:${MEMORY_EDGE_TABLE}]->() SET e.strength = e.strength * $f;`, {

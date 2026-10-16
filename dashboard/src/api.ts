@@ -1,4 +1,4 @@
-import type { MemoryEvent, OpName, StateSnapshot } from "./types.ts";
+import type { MemoryEvent, OpName, ScratchFile, ScratchListItem, StateSnapshot } from "./types.ts";
 
 export async function fetchState(): Promise<StateSnapshot> {
   const res = await fetch("/api/state");
@@ -19,8 +19,7 @@ export async function runOp(op: OpName, args: Record<string, unknown> = {}): Pro
   return body?.result;
 }
 
-export function subscribe(
-  onEvent: (event: MemoryEvent) => void,
+export function subscribe(  onEvent: (event: MemoryEvent) => void,
   onStatus?: (connected: boolean) => void
 ): () => void {
   const source = new EventSource("/api/stream");
@@ -34,4 +33,18 @@ export function subscribe(
     }
   });
   return () => source.close();
+}
+
+export async function fetchScratchList(): Promise<{ files: ScratchListItem[]; budgetLines: number }> {
+  const res = await fetch("/api/scratch");
+  if (!res.ok) throw new Error(`scratch ${res.status}`);
+  const body = (await res.json()) as { files: ScratchListItem[]; budgetLines: number };
+  return { files: body.files ?? [], budgetLines: body.budgetLines ?? 30 };
+}
+
+export async function fetchScratch(name: string): Promise<ScratchFile> {
+  const res = await fetch(`/api/scratch/file?name=${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`scratch ${res.status}`);
+  const body = (await res.json()) as { file: ScratchFile };
+  return body.file;
 }

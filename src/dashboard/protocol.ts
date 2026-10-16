@@ -56,3 +56,15 @@ export interface OpRequest {
   op: OpName;
   args?: Record<string, unknown>;
 }
+
+// Session scratchpad files (view-only in the dashboard). One short-term
+// memory file per chat session; the agent owns them, the graph stays durable.
+export interface ScratchListItem {
+  name: string;
+  mtime: number;
+  lines: number;
+}
+
+export interface ScratchFile extends ScratchListItem {
+  content: string;
+}

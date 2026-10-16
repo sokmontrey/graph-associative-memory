@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryStack } from "../stack.ts";
 import type { MemoryEvent } from "../services/memory/events.ts";
@@ -22,6 +22,43 @@ export type DashboardServer = {
 };
 
 const DEFAULT_DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "dashboard", "dist");
+
+// Session scratchpads: hot working state owned by the agent, view-only here.
+// Kept out of data/ (Ladybug volume) and git (ephemeral); the graph is durable.
+const SCRATCH_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "sessions");
+const SCRATCH_BUDGET_LINES = 30;
+
+function safeScratchName(name: string): string {
+  const base = basename(name);
+  if (base !== name || base.length === 0 || base.startsWith(".") || !base.endsWith(".md")) {
+    throw new Error("invalid scratch name");
+  }
+  return base;
+}
+
+async function listScratch(): Promise<Array<{ name: string; mtime: number; lines: number }>> {
+  let names: string[];
+  try {
+    names = await readdir(SCRATCH_DIR);
+  } catch {
+    return [];
+  }
+  const items: Array<{ name: string; mtime: number; lines: number }> = [];
+  for (const name of names) {
+    if (!name.endsWith(".md") || name.startsWith(".")) continue;
+    try {
+      const full = join(SCRATCH_DIR, name);
+      const st = await stat(full);
+      if (!st.isFile()) continue;
+      const text = await readFile(full, "utf8");
+      items.push({ name, mtime: st.mtimeMs, lines: text.split("\n").length });
+    } catch {
+      // Skip unreadable entries; one bad file must not break the list.
+    }
+  }
+  items.sort((a, b) => b.mtime - a.mtime);
+  return items;
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -52,7 +89,11 @@ function dispatch(stack: MemoryStack, req: OpRequest): Promise<unknown> {
   const args = req.args ?? {};
   switch (req.op) {
     case "search":
-      return service.search(String(args["query"]), args["n"] as number | undefined);
+      return service.search(
+        String(args["query"]),
+        args["n"] as number | undefined,
+        args["kind"] as string | undefined
+      );
     case "recent":
       return service.recent(args["n"] as number | undefined, args["kind"] as string | undefined);
     case "top":
@@ -139,8 +180,32 @@ export async function createDashboardServer(
       return sendJson(res, 200, await buildSnapshot(stack));
     }
 
-    if (path === "/api/stream") {
-      res.writeHead(200, {
+    if (path === "/api/scratch") {
+      return sendJson(res, 200, { ok: true, files: await listScratch(), budgetLines: SCRATCH_BUDGET_LINES });
+    }
+
+    if (path === "/api/scratch/file") {
+      let name: string;
+      try {
+        name = safeScratchName(url.searchParams.get("name") ?? "");
+      } catch {
+        return sendJson(res, 400, { error: "invalid scratch name" });
+      }
+      const full = join(SCRATCH_DIR, name);
+      if (!full.startsWith(SCRATCH_DIR)) return sendJson(res, 403, { error: "forbidden" });
+      try {
+        const text = await readFile(full, "utf8");
+        const st = await stat(full);
+        return sendJson(res, 200, {
+          ok: true,
+          file: { name, mtime: st.mtimeMs, lines: text.split("\n").length, content: text },
+        });
+      } catch {
+        return sendJson(res, 404, { error: "not found" });
+      }
+    }
+
+    if (path === "/api/stream") {      res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",

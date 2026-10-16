@@ -60,14 +60,15 @@ export function createMemoryMcpServer(deps: MemoryMcpDeps): McpServer {
     "memory_search",
     {
       title: "Search memories",
-      description: `${SUBAGENT_ONLY} Semantic search, ranked by relevance x importance. Read-only.`,
+      description: `${SUBAGENT_ONLY} Semantic search, ranked by relevance x importance. Optional kind filter avoids semantic scatter for constraints. Read-only.`,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: z.object({
         query: z.string().describe("What to look for."),
         n: z.number().int().min(1).max(50).optional().describe("How many to return (default 10)."),
+        kind: z.string().optional().describe("Free-form kind filter (e.g. handoff, constraint, frontier)."),
       }),
     },
-    async ({ query, n }) => json((await service.search(query, n)).map(serializeNode))
+    async ({ query, n, kind }) => json((await service.search(query, n, kind)).map(serializeNode))
   );
 
   server.registerTool(

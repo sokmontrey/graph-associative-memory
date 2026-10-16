@@ -86,6 +86,28 @@ if (resources?.mode === "owner") {
         `not starting a local one.`
     );
   }
+  // Owner-failover watchdog: remote mode proxies every op through the owner's
+  // dashboard, so a dead owner means every tool call fails with fetch errors
+  // while this process looks healthy. Re-probe periodically; after consecutive
+  // failures, exit so the host respawns us and the fresh boot retries opening
+  // the DB as owner (the single-process lock decides, so no split-brain).
+  let missed = 0;
+  const watchdog = setInterval(() => {
+    void probeOwner(ownerBaseUrl).then((alive) => {
+      if (shuttingDown) return;
+      if (alive) {
+        missed = 0;
+        return;
+      }
+      missed++;
+      console.error(`[memory] owner unreachable (${missed}/3)`);
+      if (missed >= 3) {
+        clearInterval(watchdog);
+        void shutdown("owner-gone");
+      }
+    });
+  }, 10000);
+  watchdog.unref();
 }
 
 let mcpHandle: { close(): Promise<void> } | null = null;

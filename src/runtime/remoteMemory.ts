@@ -69,8 +69,8 @@ export class RemoteMemoryService implements MemoryTools {
     }
   }
 
-  search(query: string, n?: number): Promise<MemoryNode[]> {
-    return this.callOp<MemoryNode[]>("search", { query, n });
+  search(query: string, n?: number, kind?: string): Promise<MemoryNode[]> {
+    return this.callOp<MemoryNode[]>("search", { query, n, kind });
   }
 
   recent(n?: number, kind?: string): Promise<MemoryNode[]> {

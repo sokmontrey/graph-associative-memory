@@ -27,7 +27,7 @@ export interface MemoryEdge {
 // The main agent never sees these.
 export interface MemoryTools {
     // ---- READ: pure, no side effects ----
-    search(query: string, n?: number): Promise<MemoryNode[]>;     // semantic, ranked by relevance x importance
+    search(query: string, n?: number, kind?: string): Promise<MemoryNode[]>;     // semantic, ranked by relevance x importance
     recent(n?: number, kind?: string): Promise<MemoryNode[]>;     // createdAt desc
     top(n?: number): Promise<MemoryNode[]>;                       // importance desc
     get(ids: string[]): Promise<MemoryNode[]>;
@@ -78,6 +78,9 @@ export const MEMORY_POLICY = {
     TICK_EDGE_FACTOR: 0.98,
     /** Every operation counts toward decay: a tick lands every N ops. */
     OPS_PER_TICK: 20,
+    /** Kinds exempt from tick decay: goal bundles and standing constraints
+     * must not fade while in active use. The service skips them in applyDecay. */
+    PINNED_KINDS: ["handoff", "constraint"],
 } as const;
 
 /** Saturating reinforce: diminishing returns toward MAX_VALUE. */

@@ -39,3 +39,8 @@ local_cache
 .commandcode
 data/
 backups/
+
+# session scratchpads (ephemeral working state; the graph is durable)
+sessions/
+
+session*.md

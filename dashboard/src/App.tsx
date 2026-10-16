@@ -9,6 +9,7 @@ import { Inspector, type Selection } from "./components/Inspector.tsx";
 import { SemanticSearch } from "./components/SemanticSearch.tsx";
 import { Controls } from "./components/Controls.tsx";
 import { EventLog } from "./components/EventLog.tsx";
+import { Scratchpad } from "./components/Scratchpad.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Badge } from "./components/ui/badge.tsx";
 import { ScrollArea } from "./components/ui/scroll-area.tsx";
@@ -180,14 +181,17 @@ export function App() {
                 onCollapse={() => setLeftOpen(false)}
                 collapseIcon={<PanelLeftClose className="h-3.5 w-3.5" />}
               />
-              <ScrollArea className="flex-1 px-3 pb-3">
-                <div className="space-y-4">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <ScrollArea className="max-h-[38vh] min-h-0 shrink-0 px-3 pb-3">
                   <OperationsTimeline
                     events={events}
                     snapshot={snapshot}
                     selectedOpId={selectedOpId}
                     onSelect={onSelectOp}
                   />
+                </ScrollArea>
+                <div className="mx-3 shrink-0 border-t border-border" />
+                <ScrollArea className="min-h-0 flex-1 px-3 pb-3 pt-3">
                   <Inspector
                     snapshot={snapshot}
                     prev={prevSnapshot}
@@ -196,8 +200,8 @@ export function App() {
                     onRun={onRun}
                     busy={busy}
                   />
-                </div>
-              </ScrollArea>
+                </ScrollArea>
+              </div>
             </>
           ) : (
             <CollapsedRail onExpand={() => setLeftOpen(true)} label="Explore" />
@@ -273,6 +277,7 @@ export function App() {
               <ScrollArea className="flex-1 px-3 pb-3">
                 <div className="space-y-4">
                   <Controls selection={selection} onRun={onRun} busy={busy} error={null} />
+                  <Scratchpad />
                   <EventLog events={events} />
                 </div>
               </ScrollArea>
